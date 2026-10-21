@@ -33,13 +33,13 @@ jobs:
         run: ./gradlew :app:assembleRelease :app:testDebugUnitTest
       - name: Name and checksum APK
         run: |
-          cp android/app/build/outputs/apk/release/app-release.apk Bridgey-Android.apk
-          shasum -a 256 Bridgey-Android.apk > SHA256SUMS-Android.txt
+          cp android/app/build/outputs/apk/release/app-release.apk SYNQ-Android.apk
+          shasum -a 256 SYNQ-Android.apk > SHA256SUMS-Android.txt
       - uses: actions/upload-artifact@v7
         with:
-          name: Bridgey-Android
+          name: SYNQ-Android
           path: |
-            Bridgey-Android.apk
+            SYNQ-Android.apk
             SHA256SUMS-Android.txt
 
   macos:

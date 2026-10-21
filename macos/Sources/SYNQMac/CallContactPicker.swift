@@ -784,7 +784,7 @@ struct AddFavouriteSheet: View {
                 Text("Name")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                TextField("e.g. Sanket", text: $manualName)
+                TextField("e.g. MadamJi", text: $manualName)
                     .textFieldStyle(.roundedBorder)
             }
 

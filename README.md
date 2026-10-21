@@ -1,114 +1,130 @@
-# SYNQ
+<p align="center">
+  <img src="macos/Resources/AppIcon.iconset/icon_128x128@2x.png" width="88" height="88" alt="SYNQ app icon">
+</p>
 
-**Your devices, working together seamlessly over your local network.**
+<h1 align="center">SYNQ</h1>
 
-SYNQ is an independent, open-source, local-first companion that connects your Mac and Android phone. Copy text on your Mac and paste it on your phone, share files instantly with drag-and-drop, catch Android notifications on macOS with inline quick replies, dial phone calls straight from your menu bar, and control media playback—all without external accounts, cloud servers, or third-party telemetry.
+<p align="center">
+  <strong>Your Mac and Android phone, working together.</strong><br>
+  A local-first companion for the small things that should just work across your devices.
+</p>
 
-The project is designed and led by **Sanket Bharadwaj**.
+<p align="center">
+  <a href="https://github.com/bharadwajsanket/SYNQ/releases/latest/download/SYNQ-macOS.dmg"><img alt="Download SYNQ for macOS" src="https://img.shields.io/badge/Download-macOS-202124?style=for-the-badge&logo=apple&logoColor=white"></a>
+  <a href="https://github.com/bharadwajsanket/SYNQ/releases/latest/download/SYNQ-Android.apk"><img alt="Download SYNQ for Android" src="https://img.shields.io/badge/Download-Android-202124?style=for-the-badge&logo=android&logoColor=3DDC84"></a>
+  <a href="https://github.com/bharadwajsanket/SYNQ/releases/latest"><img alt="View all releases" src="https://img.shields.io/badge/All%20releases-View-202124?style=for-the-badge&logo=github&logoColor=white"></a>
+</p>
 
----
-
-## Downloads
-
-Get the latest version of SYNQ for your devices.
-
-| Platform | Download | Minimum requirement |
-|:--|:--|:--|
-| <img src="https://cdn.simpleicons.org/apple" width="16" height="16" alt="Apple" /> **macOS** | **[Download DMG](https://github.com/bharadwajsanket/SYNQ/releases/download/v1.5.4/SYNQ-macOS.dmg)** · [ZIP archive](https://github.com/bharadwajsanket/SYNQ/releases/download/v1.5.4/SYNQ-macOS.zip) | macOS 13 Ventura or later |
-| <img src="https://cdn.simpleicons.org/android" width="16" height="16" alt="Android" /> **Android** | **[Download APK](https://github.com/bharadwajsanket/SYNQ/releases/download/v1.5.4/SYNQ-Android.apk)** | Android 8.0 (API 26) or later |
-
-**Latest release:** [v1.5.4 · View release notes and all assets](https://github.com/bharadwajsanket/SYNQ/releases/tag/v1.5.4)
-
-### Verify your download
-
-Verify downloaded files against the published SHA-256 checksums.
-
-[**SHA256SUMS.txt**](https://github.com/bharadwajsanket/SYNQ/releases/download/v1.5.4/SHA256SUMS.txt)
-
-### Prefer building from source?
-
-You can also build both applications yourself using the instructions below.
+<p align="center">
+  <a href="https://github.com/bharadwajsanket/SYNQ/releases/latest">Latest release</a>
+  &nbsp;·&nbsp; <a href="LICENSE">MIT license</a>
+  &nbsp;·&nbsp; <a href="SECURITY.md">Security</a>
+</p>
 
 ---
 
-## ✨ Features at a Glance
+## One connection. Less friction.
 
-- **📋 Bidirectional Clipboard:** Seamlessly sync text between macOS and Android with size validation and sensitive-data protections.
-- **📁 Streaming File Transfer:** Share files and folders in either direction with live progress, SHA-256 chunk validation, and safe path normalization.
-- **🔔 Notification Mirroring:** Forward phone alerts directly to macOS Notification Center, complete with inline quick replies and remote dismissal.
-- **🔑 SMS OTP Quick-Copy:** Automatically detect one-time verification codes in incoming text messages and copy them with a single click on macOS.
-- **📞 Phone Calls from Mac:** Start outgoing phone calls from your menu bar keypad, contact search, macOS Services context menu, or system `tel://` URLs.
-- **👥 Contact & Favorites Sync:** Browse your synced phone directory and pin favorite contacts right inside the macOS menu bar panel.
-- **🎵 Media Controls:** Control Music and Spotify playback across devices, complete with automatic pause when incoming calls ring.
-- **🔋 Battery Monitoring:** View live battery percentage and charging state with configurable low-battery notifications on macOS.
-- **🤝 Local Guest Transfer:** Send and receive files with nearby devices over local Wi-Fi via temporary QR codes without permanent pairing.
-- **🔒 True Local Privacy:** Mutually authenticated sessions using P-256 ECDH key agreements and AES-GCM-256 encrypted frames. No cloud servers, no accounts, and no data tracking.
+SYNQ links a Mac and an Android phone directly over your local network. Copy text on one device and paste it on the other, move files, see phone notifications on your Mac, or start a phone call from the menu bar.
 
----
+Pair your devices once. SYNQ reconnects when they’re back on the same network. Your data stays between your devices: SYNQ has no account, cloud relay, or third-party analytics.
 
-## 🚀 Quick Start: Pairing Your Devices
+## What you can do
 
-1. Connect your Mac and Android phone to the same local Wi-Fi network.
-2. Launch **SYNQ** on macOS (appears in the menu bar) and open the **SYNQ** app on Android.
-3. Your Mac will discover your Android device automatically via Bonjour / mDNS.
-4. Click **Pair** and verify the 6-digit confirmation code displayed on both screens.
-5. Once accepted, devices establish a persistent, encrypted session and reconnect automatically whenever they are on the same network.
+|  |  |
+|---|---|
+| **Clipboard**<br>Send copied text between Mac and Android. | **Files**<br>Transfer files and folders with progress and integrity checks. |
+| **Phone notifications**<br>See Android notifications in macOS Notification Center and use supported quick replies. | **Calls from Mac**<br>Find synced contacts or enter a number from the menu bar. Your Android phone confirms and places the call. |
+| **Contacts and favourites**<br>Browse synced phone contacts and keep favourite numbers close at hand. | **Media and battery**<br>Control supported Mac media players and see your phone’s battery status on your Mac. |
+| **Guest Share**<br>Let a nearby guest send files to your Mac through a temporary QR link, without pairing. | **Find your phone**<br>Ring it or send a quiet ping from your Mac. |
 
----
+## Get SYNQ
 
-## 🛠️ Building from Source
+| App | Requirements | Install |
+|---|---|---|
+| **SYNQ for macOS** | macOS 13 Ventura or later | Download the [DMG](https://github.com/bharadwajsanket/SYNQ/releases/latest/download/SYNQ-macOS.dmg) (or [ZIP](https://github.com/bharadwajsanket/SYNQ/releases/latest/download/SYNQ-macOS.zip)), open it, then drag SYNQ to Applications. |
+| **SYNQ for Android** | Android 8.0 (API 26) or later | Download the [APK](https://github.com/bharadwajsanket/SYNQ/releases/latest/download/SYNQ-Android.apk) and follow Android’s install prompt. |
 
-### macOS Application
+Want the ZIP, checksums, or older versions? Visit [all releases](https://github.com/bharadwajsanket/SYNQ/releases/latest). macOS and Android checksums are published with each release when available.
 
-**Prerequisites:** macOS 13.0+ and Xcode 15+ / Command Line Tools.
+### First connection
+
+1. Install SYNQ on your Mac and Android phone.
+2. Put both devices on the same Wi-Fi network.
+3. Open SYNQ on both devices. The Mac discovers the phone nearby.
+4. Choose the phone and compare the pairing code on both screens.
+5. Accept the pairing. SYNQ creates an encrypted connection and reconnects on that network later.
+
+## Privacy and permissions
+
+SYNQ is designed to work device-to-device on your local network. Pairing uses a confirmation code and an encrypted session. SYNQ does not require an account or send your content to a SYNQ-operated cloud service.
+
+Some features need extra access on Android. SYNQ asks when you enable the related feature:
+
+| Access | Used for |
+|---|---|
+| Contacts | Syncing the phone directory and choosing call favourites. |
+| Notification access | Mirroring notifications and relaying supported notification actions. |
+| Phone state and call controls | Optional call status, answer, decline, and hang-up integration. |
+| Notifications | Showing SYNQ’s pairing, transfer, and call confirmation alerts. |
+
+SYNQ does not read your SMS database or call log and does not replace your default phone or messaging app. See the [telephony and permissions policy](docs/sms-call-policy.md), [security notes](docs/security-testing.md), and [security reporting guide](SECURITY.md).
+
+## Good to know
+
+- Both devices need to be on the same reachable local network. SYNQ does not provide internet relay or remote access.
+- Phone calls are placed by Android after you confirm on the phone. Mac microphone and speaker calling is not currently supported.
+- Notification replies depend on whether the source app exposes a reply action.
+- Android may restrict background activity to save battery. If SYNQ stops reconnecting while your phone is idle, allow background use for SYNQ in Android settings.
+- Builds without Developer ID signing and notarization may require you to approve the app in macOS Privacy & Security before opening it.
+
+## Build from source
+
+### macOS
+
+**Requirements:** macOS 13+ and Xcode 15 or newer.
 
 ```bash
 cd macos
-# Build the native menu bar app bundle
 ./build-app.sh
-
-# Or package a distributable disk image (.dmg)
-./package-release.sh
-
-# Run the automated test suite (93 tests)
-swift test
 ```
 
-The compiled application bundle will be located at `macos/.build/debug/SYNQ.app` (or `.build/release/SYNQ.app`).
+The app bundle is created at `macos/.build/debug/SYNQ.app`. To package a DMG and ZIP for distribution:
 
-### Android Application
+```bash
+cd macos
+./package-release.sh
+```
 
-**Prerequisites:** JDK 17+ and Android SDK (API 26+).
+### Android
+
+**Requirements:** JDK 17 and Android SDK (API 26+).
 
 ```bash
 cd android
-# Build the debug APK
 ./gradlew assembleDebug
-
-# Run the unit test suite (57 tests)
-./gradlew testDebugUnitTest
 ```
 
-The generated APK will be at `android/app/build/outputs/apk/debug/app-debug.apk`.
+The APK is created at `android/app/build/outputs/apk/debug/app-debug.apk`. Release builds use a signing key; see the [release guide](docs/releasing.md).
 
----
+### Run the test suites
 
-## 📚 Technical Documentation
+```bash
+cd macos && swift test
+cd ../android && ./gradlew testDebugUnitTest
+```
 
-Deep-dive architecture, cryptographic specifications, and policies:
+## How it works
 
-- 🏗️ [**System Architecture**](docs/architecture.md) — Architectural layers, state machines, platform components, and data flows.
-- 📡 [**Wire Protocol Specification**](docs/protocol.md) — Frame structures, cryptographic contexts, message formats, and test vectors.
-- 🛡️ [**Security & Threat Model**](docs/security-testing.md) — Cryptographic boundaries, path sanitization, and verification suites.
-- 🧪 [**Testing Guide**](docs/testing.md) — Automated unit, crypto-integration, and manual verification procedures.
-- 📦 [**Release & Packaging Workflow**](docs/releasing.md) — Building, ad-hoc signing, and notarizing release artifacts.
-- 📱 [**Telephony & Permissions Policy**](docs/sms-call-policy.md) — Privacy rationale for Android telephone and notification permissions.
-- 🔐 [**Security Advisory & Policy**](SECURITY.md) — Vulnerability reporting guidelines and supported versions.
+SYNQ discovers paired devices with Bonjour/mDNS and communicates directly over the local network. The protocol uses P-256 ephemeral key agreement, HKDF key derivation, and AES-GCM authenticated encryption. File transfers are chunked and checked for integrity. Read the [architecture overview](docs/architecture.md) and [wire protocol](docs/protocol.md) for implementation details.
 
----
+## Project
 
-## 👤 Project Leadership & License
+SYNQ is an independent open-source project created and maintained by **Sanket Bharadwaj**.
 
-SYNQ is an independent open-source project designed and led by **Sanket Bharadwaj**.
+- [Browse the source](https://github.com/bharadwajsanket/SYNQ)
+- [Report a bug or request a feature](https://github.com/bharadwajsanket/SYNQ/issues)
+- [Read the release notes](RELEASE_NOTES.md)
+- [Read the license](LICENSE)
 
-Licensed under the [MIT License](LICENSE).
+Contributions and clear bug reports are welcome. Please review the [security policy](SECURITY.md) before reporting a vulnerability.
