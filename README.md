@@ -8,17 +8,26 @@ The project is designed and led by **Sanket Bharadwaj**.
 
 ---
 
-## 📦 Downloads & Releases
+## Downloads
 
-Official pre-compiled binaries are available directly from the [latest GitHub Release (v1.5.4)](https://github.com/bharadwajsanket/SYNQ/releases/latest):
+Get the latest version of SYNQ for your devices.
 
-| Platform | Download Link | Requirements |
-| :--- | :--- | :--- |
-| **🍎 macOS** | [**SYNQ-macOS.dmg**](https://github.com/bharadwajsanket/SYNQ/releases/download/v1.5.4/SYNQ-macOS.dmg) • [ZIP](https://github.com/bharadwajsanket/SYNQ/releases/download/v1.5.4/SYNQ-macOS.zip) | macOS 13.0 (Ventura) or later |
-| **🤖 Android** | [**SYNQ-Android.apk**](https://github.com/bharadwajsanket/SYNQ/releases/download/v1.5.4/SYNQ-Android.apk) | Android 8.0 (API 26) or later |
-| **🔐 Hashes** | [**SHA256SUMS.txt**](https://github.com/bharadwajsanket/SYNQ/releases/download/v1.5.4/SHA256SUMS.txt) | Verification manifest |
+| Platform | Download | Minimum requirement |
+|:--|:--|:--|
+| <img src="https://cdn.simpleicons.org/apple" width="16" height="16" alt="Apple" /> **macOS** | **[Download DMG](https://github.com/bharadwajsanket/SYNQ/releases/download/v1.5.4/SYNQ-macOS.dmg)** · [ZIP archive](https://github.com/bharadwajsanket/SYNQ/releases/download/v1.5.4/SYNQ-macOS.zip) | macOS 13 Ventura or later |
+| <img src="https://cdn.simpleicons.org/android" width="16" height="16" alt="Android" /> **Android** | **[Download APK](https://github.com/bharadwajsanket/SYNQ/releases/download/v1.5.4/SYNQ-Android.apk)** | Android 8.0 (API 26) or later |
 
-*You can also build both client applications directly from source using the instructions below.*
+**Latest release:** [v1.5.4 · View release notes and all assets](https://github.com/bharadwajsanket/SYNQ/releases/tag/v1.5.4)
+
+### Verify your download
+
+Verify downloaded files against the published SHA-256 checksums.
+
+[**SHA256SUMS.txt**](https://github.com/bharadwajsanket/SYNQ/releases/download/v1.5.4/SHA256SUMS.txt)
+
+### Prefer building from source?
+
+You can also build both applications yourself using the instructions below.
 
 ---
 
