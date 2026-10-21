@@ -10,12 +10,15 @@ The project is designed and led by **Sanket Bharadwaj**.
 
 ## 📦 Downloads & Releases
 
-Pre-compiled binary releases for macOS and Android are managed via GitHub Releases:
+Official pre-compiled binaries are available directly from the [latest GitHub Release (v1.5.4)](https://github.com/bharadwajsanket/SYNQ/releases/latest):
 
-- **macOS (`.dmg` / `.zip`):** [Download from GitHub Releases](https://github.com/bharadwajsanket/SYNQ/releases) *(Official releases coming soon — build from source below in 1 step!)*
-- **Android (`.apk`):** [Download from GitHub Releases](https://github.com/bharadwajsanket/SYNQ/releases) *(Official releases coming soon — build from source below in 1 step!)*
+| Platform | Download Link | Requirements |
+| :--- | :--- | :--- |
+| **🍎 macOS** | [**SYNQ-macOS.dmg**](https://github.com/bharadwajsanket/SYNQ/releases/download/v1.5.4/SYNQ-macOS.dmg) • [ZIP](https://github.com/bharadwajsanket/SYNQ/releases/download/v1.5.4/SYNQ-macOS.zip) | macOS 13.0 (Ventura) or later |
+| **🤖 Android** | [**SYNQ-Android.apk**](https://github.com/bharadwajsanket/SYNQ/releases/download/v1.5.4/SYNQ-Android.apk) | Android 8.0 (API 26) or later |
+| **🔐 Hashes** | [**SHA256SUMS.txt**](https://github.com/bharadwajsanket/SYNQ/releases/download/v1.5.4/SHA256SUMS.txt) | Verification manifest |
 
-*Both client applications can be built directly from source using the instructions below.*
+*You can also build both client applications directly from source using the instructions below.*
 
 ---
 
