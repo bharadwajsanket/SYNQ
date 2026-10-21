@@ -1,0 +1,28 @@
+import XCTest
+@testable import SYNQMac
+
+final class SYNQSettingsTests: XCTestCase {
+    func testGlobalSwitchOverridesDeviceSetting() {
+        XCTAssertFalse(effectiveFeatureEnabled(globalEnabled: false, deviceEnabled: true))
+        XCTAssertFalse(effectiveFeatureEnabled(globalEnabled: false, deviceEnabled: nil))
+    }
+
+    func testDeviceSwitchOverridesEnabledGlobalDefault() {
+        XCTAssertFalse(effectiveFeatureEnabled(globalEnabled: true, deviceEnabled: false))
+        XCTAssertTrue(effectiveFeatureEnabled(globalEnabled: true, deviceEnabled: true))
+        XCTAssertTrue(effectiveFeatureEnabled(globalEnabled: true, deviceEnabled: nil))
+    }
+
+    func testFeatureRequiresBothDevicesToOfferIt() {
+        XCTAssertTrue(effectiveFeatureAvailable(localEnabled: true, remoteEnabled: true))
+        XCTAssertFalse(effectiveFeatureAvailable(localEnabled: true, remoteEnabled: false))
+        XCTAssertFalse(effectiveFeatureAvailable(localEnabled: false, remoteEnabled: true))
+    }
+
+
+    func testNewerFeaturesAreOffForLegacyPeers() {
+        XCTAssertFalse(featureEnabledByLegacyPeer(.calls))
+        XCTAssertFalse(featureEnabledByLegacyPeer(.ping))
+        XCTAssertTrue(featureEnabledByLegacyPeer(.battery))
+    }
+}

@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Mac Stand Neck & Foot -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M38.5,64 L52.5,64 M45.5,56 L45.5,64" />
+
+    <!-- Mac Monitor Frame -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M33.5,32 h24 a4,4 0 0 1 4,4 v16 a4,4 0 0 1 -4,4 h-24 a4,4 0 0 1 -4,-4 v-16 a4,4 0 0 1 4,-4 z" />
+
+    <!-- Phone Body (Cutout fill cleanly overlays the Mac stand) -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M61.5,40 h12 a5,5 0 0 1 5,5 v26 a5,5 0 0 1 -5,5 h-12 a5,5 0 0 1 -5,-5 v-26 a5,5 0 0 1 5,-5 z" />
+
+    <!-- Phone Speaker Pill -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M64.5,44 h6" />
+
+    <!-- Connecting Sync Bridge -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M45.5,44 C51.5,44 57.5,50 67.5,58" />
+
+    <!-- Anchor Nodes -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M45.5,44 m-3.5,0 a3.5,3.5 0 1,0 7,0 a3.5,3.5 0 1,0 -7,0" />
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M67.5,58 m-3.5,0 a3.5,3.5 0 1,0 7,0 a3.5,3.5 0 1,0 -7,0" />
+</vector>

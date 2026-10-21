@@ -1,0 +1,57 @@
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# macOS / Xcode / Swift
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.swiftpm/
+macos/.build/
+macos/dist/
+__pycache__/
+*.pyc
+
+# Android / Gradle
+.gradle/
+android/.gradle/
+android/.idea/
+android/local.properties
+local.properties
+android/**/build/
+build/
+*.iml
+*.hprof
+
+# IDEs & Editors
+.idea/
+.vscode/
+*.swp
+*~
+*.bak
+
+# Build and Packaging outputs
+dist/
+*.apk
+*.aab
+*.dmg
+*.zip
+*.tar.gz
+
+# Secrets and Signing Credentials
+.env
+.env.*
+*.jks
+*.keystore
+*.key
+*.pem
+*.p12
+*.cer
+*.crt
+*.mobileprovision
+*.provisionprofile

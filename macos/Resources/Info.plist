@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>SYNQMac</string>
+    <key>CFBundleIdentifier</key>
+    <string>dev.synq.mac</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>SYNQ</string>
+	<key>CFBundleDisplayName</key>
+	<string>SYNQ</string>
+	<key>CFBundleIconFile</key>
+	<string>SYNQ.icns</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>SYNQ discovers and connects to your paired Android devices on your local network.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>When you enable media controls, SYNQ controls your selected Music or Spotify player and shares now-playing information with your paired phone.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_synq._tcp</string>
+    </array>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.5.4</string>
+    <key>CFBundleVersion</key>
+    <string>27</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSUserNotificationAlertStyle</key>
+    <string>alert</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleURLName</key>
+            <string>dev.synq.mac.phone</string>
+            <key>CFBundleURLSchemes</key>
+            <array><string>tel</string></array>
+        </dict>
+    </array>
+    <key>NSServices</key>
+    <array>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict><key>default</key><string>Call with SYNQ</string></dict>
+            <key>NSMessage</key>
+            <string>callWithSYNQ</string>
+            <key>NSPortName</key>
+            <string>SYNQ</string>
+            <key>NSSendTypes</key>
+            <array><string>public.utf8-plain-text</string></array>
+        </dict>
+        <dict>
+            <key>NSBackgroundColorName</key>
+            <string>background</string>
+            <key>NSIconName</key>
+            <string>NSActionTemplate</string>
+            <key>NSMenuItem</key>
+            <dict>
+                <key>default</key>
+                <string>SYNQ</string>
+            </dict>
+            <key>NSMessage</key>
+            <string>sendFilesWithSYNQ</string>
+            <key>NSPortName</key>
+            <string>SYNQ</string>
+            <key>NSRequiredContext</key>
+            <dict>
+                <key>NSApplicationIdentifier</key>
+                <string>com.apple.finder</string>
+            </dict>
+            <key>NSSendFileTypes</key>
+            <array>
+                <string>public.item</string>
+            </array>
+            <key>NSSendTypes</key>
+            <array>
+                <string>NSFilenamesPboardType</string>
+                <string>public.plain-text</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

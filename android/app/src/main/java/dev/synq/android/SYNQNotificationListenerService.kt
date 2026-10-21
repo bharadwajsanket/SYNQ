@@ -1,0 +1,632 @@
+package dev.synq.android
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.Notification
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.RemoteInput
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
+import android.service.notification.NotificationListenerService
+import android.service.notification.StatusBarNotification
+import android.telecom.TelecomManager
+import android.telephony.TelephonyCallback
+import android.telephony.TelephonyManager
+import android.util.Base64
+import androidx.annotation.RequiresApi
+import java.io.ByteArrayOutputStream
+import java.security.MessageDigest
+
+class SYNQNotificationListenerService : NotificationListenerService() {
+    private val forwardedNotifications = ForwardedNotificationRegistry()
+    private val storedActions = linkedMapOf<String, StoredNotificationAction>()
+    private val actionTokensByNotificationId = mutableMapOf<String, List<String>>()
+    private val applicationIcons = linkedMapOf<String, String>()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val pendingCallPosts = mutableMapOf<String, Runnable>()
+    private val forwardedNotificationIds = mutableSetOf<String>()
+    private var telephonyCallback: TelephonyCallback? = null
+
+    override fun onDestroy() {
+        unregisterTelephonyCallback()
+        pendingCallPosts.values.forEach(mainHandler::removeCallbacks)
+        pendingCallPosts.clear()
+        if (activeService?.get() === this) activeService = null
+        super.onDestroy()
+    }
+
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        activeService = java.lang.ref.WeakReference(this)
+        activeNotifications.orEmpty()
+            .filterNot { it.packageName == packageName }
+            .forEach { forwardedNotifications.record(notificationToken(it.key), it.key, it.packageName) }
+        updateTelephonyCallback()
+        android.util.Log.i("SYNQ", "PLUGIN notification listener connected")
+    }
+
+    override fun onListenerDisconnected() {
+        unregisterTelephonyCallback()
+        if (activeService?.get() === this) activeService = null
+        super.onListenerDisconnected()
+    }
+
+    override fun onNotificationPosted(sbn: StatusBarNotification, rankingMap: RankingMap) {
+        android.util.Log.d("SYNQ", "PLUGIN notification observed package=${sbn.packageName}")
+        val synq = application as SYNQApplication
+        if (!shouldForwardNotification(
+                isPrimaryUser = synq.isPrimaryUser,
+                isSYNQEnabled = synq.isSYNQEnabled,
+                isMasterNotificationsEnabled = synq.settings.isEnabled(SYNQFeature.NOTIFICATIONS, null),
+                ownPackageName = packageName,
+                notificationPackageName = sbn.packageName,
+                disabledPackages = synq.settings.state.value.disabledNotificationPackages,
+            )
+        ) return
+
+        val notification = sbn.notification
+        if (notification.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
+        val isCall = notification.category == Notification.CATEGORY_CALL
+        if (shouldIgnoreOngoingNotification(notification.flags, notification.category)) return
+        if (notification.visibility == Notification.VISIBILITY_SECRET) return
+
+        val ranking = Ranking()
+        if (rankingMap.getRanking(sbn.key, ranking) && ranking.importance <= NotificationManager.IMPORTANCE_MIN) return
+
+        val title = notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
+        val text = notification.extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.trim().orEmpty()
+        val bigText = notification.extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()?.trim().orEmpty()
+        val fullText = if (bigText.isNotBlank()) bigText else text
+        if (title.isEmpty() && fullText.isEmpty()) return
+
+        val applicationName = runCatching {
+            val info = packageManager.getApplicationInfo(sbn.packageName, 0)
+            packageManager.getApplicationLabel(info).toString()
+        }.getOrDefault(sbn.packageName)
+
+        if (synq.settings.state.value.otpAssistanceEnabled) {
+            val otpCandidate = OtpDetector.detect(title = title, text = fullText, sender = applicationName)
+            if (otpCandidate != null) {
+                synq.pairing.sendOtp(otpCandidate.code, otpCandidate.sender, otpCandidate.timestamp)
+                // Sensitive OTP candidate is routed directly to the dedicated SYNQ prompt on Mac.
+                // Suppress generic notification forwarding to avoid duplicate/confusing notification previews.
+                return
+            }
+        }
+
+        synq.settings.observeNotificationApplication(sbn.packageName, applicationName)
+        if (!synq.settings.isNotificationApplicationEnabled(sbn.packageName)) return
+        val applicationIcon = applicationIcon(sbn.packageName)
+
+        val telephonyCallType = if (isCall) currentTelephonyCallType() else null
+        if (telephonyCallType == "idle") {
+            removeForwardedCall(sbn.key)
+            return
+        }
+        val notificationId = notificationToken(sbn.key)
+        forwardedNotifications.record(notificationId, sbn.key, sbn.packageName)
+        pendingCallPosts.remove(notificationId)?.let(mainHandler::removeCallbacks)
+        val callType = if (isCall) resolvedNotificationCallType(notification, telephonyCallType) else null
+        val actions = storeActions(
+            notificationId,
+            notificationActionCandidates(notification, callType, canControlSystemCalls()),
+        )
+        val safeText = fullText
+        val forward = Runnable {
+            pendingCallPosts.remove(notificationId)
+            if (forwardedNotifications.systemKey(notificationId) != sbn.key) return@Runnable
+            synq.pairing.sendNotification(
+                packageName = sbn.packageName,
+                applicationName = applicationName,
+                notificationId = notificationId,
+                title = title,
+                text = safeText,
+                timestamp = sbn.postTime,
+                actions = actions,
+                applicationIcon = applicationIcon,
+                callType = callType,
+            )
+            forwardedNotificationIds += notificationId
+            while (forwardedNotificationIds.size > MAX_TRACKED_FORWARDED_NOTIFICATIONS) {
+                forwardedNotificationIds.remove(forwardedNotificationIds.first())
+            }
+        }
+        if (shouldDelayCallPost(callType)) {
+            pendingCallPosts[notificationId] = forward
+            mainHandler.postDelayed(forward, CALL_POST_SETTLE_DELAY_MS)
+        } else {
+            forward.run()
+        }
+    }
+
+    override fun onNotificationRemoved(sbn: StatusBarNotification) {
+        super.onNotificationRemoved(sbn)
+        val notificationId = forwardedNotifications.removeSystemKey(sbn.key) ?: return
+        pendingCallPosts.remove(notificationId)?.let(mainHandler::removeCallbacks)
+        removeActions(notificationId)
+        if (!forwardedNotificationIds.remove(notificationId)) return
+        val synq = application as SYNQApplication
+        if (!synq.isPrimaryUser || !synq.isSYNQEnabled) return
+        synq.pairing.sendNotificationRemoved(notificationId)
+    }
+
+    private fun dismissForwardedNotification(notificationId: String): Boolean {
+        val systemKey = forwardedNotifications.systemKey(notificationId) ?: return false
+        android.os.Handler(android.os.Looper.getMainLooper()).post { cancelNotification(systemKey) }
+        return true
+    }
+
+    @Synchronized
+    private fun applyApplicationFilter(packageName: String, enabled: Boolean) {
+        if (enabled) return
+        val synq = application as SYNQApplication
+        forwardedNotifications.removePackage(packageName).forEach { notificationId ->
+            pendingCallPosts.remove(notificationId)?.let(mainHandler::removeCallbacks)
+            removeActions(notificationId)
+            if (forwardedNotificationIds.remove(notificationId) && synq.isPrimaryUser && synq.isSYNQEnabled) {
+                synq.pairing.sendNotificationRemoved(notificationId)
+            }
+        }
+    }
+
+    @Synchronized
+    private fun applyMasterFilter(enabled: Boolean) {
+        if (enabled) return
+        val synq = application as SYNQApplication
+        forwardedNotifications.removeAll().forEach { notificationId ->
+            pendingCallPosts.remove(notificationId)?.let(mainHandler::removeCallbacks)
+            removeActions(notificationId)
+            if (forwardedNotificationIds.remove(notificationId) && synq.isPrimaryUser && synq.isSYNQEnabled) {
+                synq.pairing.sendNotificationRemoved(notificationId)
+            }
+        }
+    }
+
+    @Synchronized
+    private fun storeActions(
+        notificationId: String,
+        actions: List<NotificationActionCandidate>,
+    ): List<ForwardedNotificationAction> {
+        removeActions(notificationId)
+        val forwarded = actions.take(MAX_FORWARDED_ACTIONS).mapIndexedNotNull { index, action ->
+            val title = action.title.trim().take(64)
+            val pendingIntent = action.pendingIntent
+            if (title.isEmpty()) return@mapIndexedNotNull null
+            val remoteInputs = action.remoteInputs.filter(RemoteInput::getAllowFreeFormInput).toTypedArray()
+            val token = notificationActionToken(notificationId, index)
+            storedActions[token] = StoredNotificationAction(
+                notificationId = notificationId,
+                pendingIntent = pendingIntent,
+                remoteInputs = remoteInputs,
+                systemCallAction = action.systemCallAction,
+            )
+            ForwardedNotificationAction(token = token, title = title, allowsReply = remoteInputs.isNotEmpty())
+        }
+        actionTokensByNotificationId[notificationId] = forwarded.map(ForwardedNotificationAction::token)
+        while (storedActions.size > MAX_STORED_ACTIONS) storedActions.remove(storedActions.keys.first())
+        return forwarded
+    }
+
+    @Synchronized
+    private fun removeActions(notificationId: String) {
+        actionTokensByNotificationId.remove(notificationId).orEmpty().forEach(storedActions::remove)
+    }
+
+    @Synchronized
+    private fun applicationIcon(packageName: String): String? {
+        applicationIcons[packageName]?.let { return it }
+        val drawable = runCatching { packageManager.getApplicationIcon(packageName) }.getOrNull() ?: return null
+        val encoded = ICON_SIZES.firstNotNullOfOrNull { size ->
+            val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            drawable.setBounds(0, 0, size, size)
+            drawable.draw(canvas)
+            val bytes = ByteArrayOutputStream().use { output ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+                output.toByteArray()
+            }
+            bitmap.recycle()
+            bytes.takeIf { it.size <= MAX_ICON_BYTES }
+                ?.let { Base64.encodeToString(it, Base64.NO_WRAP) }
+        } ?: return null
+        applicationIcons[packageName] = encoded
+        while (applicationIcons.size > MAX_CACHED_ICONS) applicationIcons.remove(applicationIcons.keys.first())
+        return encoded
+    }
+
+    @Synchronized
+    private fun performAction(notificationId: String, actionToken: String, replyText: String?): Boolean {
+        val action = storedActions[actionToken]?.takeIf { it.notificationId == notificationId } ?: return false
+        if (replyText != null && action.remoteInputs.isEmpty()) return false
+        return runCatching {
+            val succeeded = if (action.systemCallAction != null) {
+                if (performSystemCallAction(action.systemCallAction)) {
+                    true
+                } else if (action.pendingIntent != null) {
+                    action.pendingIntent.send()
+                    true
+                } else {
+                    false
+                }
+            } else if (replyText != null && action.remoteInputs.isNotEmpty()) {
+                val results = Bundle().apply {
+                    action.remoteInputs.forEach { putCharSequence(it.resultKey, replyText.take(MAX_REPLY_LENGTH)) }
+                }
+                val fillInIntent = Intent()
+                RemoteInput.addResultsToIntent(action.remoteInputs, fillInIntent, results)
+                action.pendingIntent?.send(this, 0, fillInIntent)
+                true
+            } else {
+                action.pendingIntent?.send()
+                true
+            }
+            if (succeeded) storedActions.remove(actionToken)
+            android.util.Log.i(
+                "SYNQ",
+                "PLUGIN notification action performed system=${action.systemCallAction != null} success=$succeeded",
+            )
+            succeeded
+        }.getOrElse {
+            android.util.Log.w("SYNQ", "PLUGIN notification action failed", it)
+            false
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    @Suppress("DEPRECATION")
+    private fun performSystemCallAction(action: SystemCallAction): Boolean = runCatching {
+        if (!canControlSystemCalls()) return false
+        val telecom = getSystemService(TelecomManager::class.java) ?: return false
+        when (action) {
+            SystemCallAction.ANSWER -> {
+                telecom.acceptRingingCall()
+                true
+            }
+            SystemCallAction.END -> Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && telecom.endCall()
+        }
+    }.getOrDefault(false)
+
+    @Suppress("DEPRECATION")
+    private fun currentTelephonyCallType(): String? {
+        if (!isCallIntegrationEnabled()) return null
+        if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) return null
+        return telephonyCallType(getSystemService(TelephonyManager::class.java).callState)
+    }
+
+    private fun canControlSystemCalls(): Boolean =
+        isCallIntegrationEnabled() &&
+            checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED
+
+    private fun isCallIntegrationEnabled(): Boolean =
+        (application as SYNQApplication).settings.state.value.directCallsEnabled
+
+    private fun updateTelephonyCallback() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        unregisterTelephonyCallback()
+        if (!isCallIntegrationEnabled()) return
+        if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) return
+        val callback = SYNQCallStateCallback()
+        runCatching {
+            getSystemService(TelephonyManager::class.java).registerTelephonyCallback(mainExecutor, callback)
+            telephonyCallback = callback
+        }.onFailure { android.util.Log.w("SYNQ", "PLUGIN call-state listener registration failed", it) }
+    }
+
+    private fun unregisterTelephonyCallback() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        telephonyCallback?.let { callback ->
+            runCatching { getSystemService(TelephonyManager::class.java).unregisterTelephonyCallback(callback) }
+        }
+        telephonyCallback = null
+    }
+
+    private fun refreshActiveCallNotifications() {
+        val ranking = currentRanking
+        activeNotifications.orEmpty()
+            .filter { it.packageName != packageName && it.notification.category == Notification.CATEGORY_CALL }
+            .forEach { onNotificationPosted(it, ranking) }
+    }
+
+    private fun removeActiveForwardedCalls() {
+        activeNotifications.orEmpty()
+            .filter { it.packageName != packageName && it.notification.category == Notification.CATEGORY_CALL }
+            .forEach { removeForwardedCall(it.key) }
+    }
+
+    private fun removeForwardedCall(systemKey: String) {
+        val notificationId = forwardedNotifications.removeSystemKey(systemKey) ?: return
+        pendingCallPosts.remove(notificationId)?.let(mainHandler::removeCallbacks)
+        removeActions(notificationId)
+        val synq = application as SYNQApplication
+        if (
+            forwardedNotificationIds.remove(notificationId) &&
+            synq.isPrimaryUser && synq.isSYNQEnabled
+        ) {
+            synq.pairing.sendNotificationRemoved(notificationId)
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private inner class SYNQCallStateCallback : TelephonyCallback(), TelephonyCallback.CallStateListener {
+        override fun onCallStateChanged(state: Int) {
+            android.util.Log.d("SYNQ", "PLUGIN telephony state=${telephonyCallType(state) ?: "idle"}")
+            when (state) {
+                TelephonyManager.CALL_STATE_RINGING,
+                TelephonyManager.CALL_STATE_OFFHOOK,
+                -> refreshActiveCallNotifications()
+                TelephonyManager.CALL_STATE_IDLE -> removeActiveForwardedCalls()
+            }
+        }
+    }
+
+    companion object {
+        @Volatile
+        private var activeService: java.lang.ref.WeakReference<SYNQNotificationListenerService>? = null
+
+        fun dismiss(notificationId: String): Boolean {
+            val service = activeService?.get() ?: return false
+            return service.dismissForwardedNotification(notificationId)
+        }
+
+        fun perform(notificationId: String, actionToken: String, replyText: String?): Boolean {
+            val service = activeService?.get() ?: return false
+            return service.performAction(notificationId, actionToken, replyText)
+        }
+
+        fun filterChanged(packageName: String, enabled: Boolean) {
+            activeService?.get()?.applyApplicationFilter(packageName, enabled)
+        }
+
+        fun masterFilterChanged(enabled: Boolean) {
+            activeService?.get()?.applyMasterFilter(enabled)
+        }
+
+        fun callPermissionsChanged() {
+            activeService?.get()?.mainHandler?.post {
+                activeService?.get()?.updateTelephonyCallback()
+            }
+        }
+
+        private const val MAX_FORWARDED_ACTIONS = 4
+        private const val MAX_STORED_ACTIONS = 2_048
+        private const val MAX_REPLY_LENGTH = 4_096
+        private const val MAX_ICON_BYTES = 20 * 1024
+        private const val MAX_CACHED_ICONS = 128
+        private const val MAX_TRACKED_FORWARDED_NOTIFICATIONS = 512
+        private const val CALL_POST_SETTLE_DELAY_MS = 450L
+        private val ICON_SIZES = listOf(64, 48, 32)
+    }
+}
+
+private data class NotificationActionCandidate(
+    val title: String,
+    val pendingIntent: PendingIntent? = null,
+    val remoteInputs: List<RemoteInput> = emptyList(),
+    val systemCallAction: SystemCallAction? = null,
+)
+
+private enum class SystemCallAction { ANSWER, END }
+
+private fun notificationActionCandidates(
+    notification: Notification,
+    callType: String?,
+    canControlSystemCalls: Boolean,
+): List<NotificationActionCandidate> {
+    if (callType != null && canControlSystemCalls) {
+        return systemCallActionCandidates(callType, Build.VERSION.SDK_INT)
+    }
+    val candidates = notification.actions.orEmpty().mapNotNull { action ->
+        val pendingIntent = action.actionIntent ?: return@mapNotNull null
+        NotificationActionCandidate(
+            title = action.title?.toString().orEmpty(),
+            pendingIntent = pendingIntent,
+            remoteInputs = action.remoteInputs.orEmpty().toList(),
+        )
+    }.toMutableList()
+    if (callType == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return candidates
+
+    callStyleFallbackActions(callType).forEach { action ->
+        val pendingIntent = notification.extras.pendingIntent(action.extraKey) ?: return@forEach
+        if (candidates.none { it.pendingIntent == pendingIntent }) {
+            candidates += NotificationActionCandidate(action.title, pendingIntent)
+        }
+    }
+    return candidates
+}
+
+private fun resolvedNotificationCallType(notification: Notification, telephonyCallType: String?): String {
+    val reportedType = notificationCallType(notification.extras.getInt("android.callType", 0))
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return reportedType
+    val hasAnswer = notification.extras.pendingIntent(Notification.EXTRA_ANSWER_INTENT) != null
+    val hasDecline = notification.extras.pendingIntent(Notification.EXTRA_DECLINE_INTENT) != null
+    val hasHangUp = notification.extras.pendingIntent(Notification.EXTRA_HANG_UP_INTENT) != null
+    val hasFullScreenIntent = notification.fullScreenIntent != null
+    val resolvedType = resolvedNotificationCallType(
+        reportedType = reportedType,
+        hasAnswer = hasAnswer,
+        hasDecline = hasDecline,
+        hasHangUp = hasHangUp,
+        hasFullScreenIntent = hasFullScreenIntent,
+        telephonyCallType = telephonyCallType,
+    )
+    android.util.Log.d(
+        "SYNQ",
+        "PLUGIN call state reported=$reportedType resolved=$resolvedType " +
+            "phoneState=${telephonyCallType ?: "unavailable"} fullScreen=$hasFullScreenIntent " +
+            "answer=$hasAnswer decline=$hasDecline hangUp=$hasHangUp",
+    )
+    return resolvedType
+}
+
+internal fun resolvedNotificationCallType(
+    reportedType: String,
+    hasAnswer: Boolean,
+    hasDecline: Boolean,
+    hasHangUp: Boolean,
+    hasFullScreenIntent: Boolean = false,
+    telephonyCallType: String? = null,
+): String = when {
+    telephonyCallType == "incoming" -> "incoming"
+    telephonyCallType == "ongoing" -> "ongoing"
+    // Samsung's dialer reports CALL_TYPE_ONGOING while the phone is still ringing.
+    // Its full-screen intent is the stable, language-independent incoming-call signal.
+    hasFullScreenIntent -> "incoming"
+    hasAnswer && hasDecline && !hasHangUp -> "incoming"
+    hasAnswer && hasHangUp && !hasDecline -> "screening"
+    hasHangUp && !hasAnswer && !hasDecline -> "ongoing"
+    else -> reportedType
+}
+
+internal fun systemCallActionTitles(callType: String, sdkInt: Int): List<String> = when (callType) {
+    "incoming" -> buildList {
+        if (sdkInt >= Build.VERSION_CODES.P) add("Decline")
+        add("Answer")
+    }
+    "ongoing" -> if (sdkInt >= Build.VERSION_CODES.P) listOf("Hang Up") else emptyList()
+    "screening" -> buildList {
+        if (sdkInt >= Build.VERSION_CODES.P) add("Hang Up")
+        add("Answer")
+    }
+    else -> emptyList()
+}
+
+private fun systemCallActionCandidates(callType: String, sdkInt: Int): List<NotificationActionCandidate> =
+    systemCallActionTitles(callType, sdkInt).map { title ->
+        NotificationActionCandidate(
+            title = title,
+            systemCallAction = if (title == "Answer") SystemCallAction.ANSWER else SystemCallAction.END,
+        )
+    }
+
+internal fun shouldDelayCallPost(callType: String?): Boolean = callType == "ongoing"
+
+internal data class CallStyleFallbackAction(val title: String, val extraKey: String)
+
+internal fun callStyleFallbackActions(callType: String): List<CallStyleFallbackAction> = when (callType) {
+    "incoming" -> listOf(
+        CallStyleFallbackAction("Decline", Notification.EXTRA_DECLINE_INTENT),
+        CallStyleFallbackAction("Answer", Notification.EXTRA_ANSWER_INTENT),
+    )
+    "ongoing" -> listOf(CallStyleFallbackAction("Hang Up", Notification.EXTRA_HANG_UP_INTENT))
+    "screening" -> listOf(
+        CallStyleFallbackAction("Hang Up", Notification.EXTRA_HANG_UP_INTENT),
+        CallStyleFallbackAction("Answer", Notification.EXTRA_ANSWER_INTENT),
+    )
+    else -> emptyList()
+}
+
+@Suppress("DEPRECATION")
+private fun Bundle.pendingIntent(key: String): PendingIntent? =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        getParcelable(key, PendingIntent::class.java)
+    } else {
+        getParcelable(key) as? PendingIntent
+    }
+
+data class ForwardedNotificationAction(
+    val token: String,
+    val title: String,
+    val allowsReply: Boolean,
+)
+
+private data class StoredNotificationAction(
+    val notificationId: String,
+    val pendingIntent: PendingIntent?,
+    val remoteInputs: Array<RemoteInput>,
+    val systemCallAction: SystemCallAction?,
+)
+
+internal class ForwardedNotificationRegistry(private val limit: Int = 512) {
+    private data class Entry(val systemKey: String, val packageName: String)
+    private val entriesByNotificationId = linkedMapOf<String, Entry>()
+
+    @Synchronized
+    fun record(notificationId: String, systemKey: String, packageName: String) {
+        entriesByNotificationId.remove(notificationId)
+        entriesByNotificationId[notificationId] = Entry(systemKey, packageName)
+        while (entriesByNotificationId.size > limit) {
+            entriesByNotificationId.remove(entriesByNotificationId.keys.first())
+        }
+    }
+
+    @Synchronized
+    fun systemKey(notificationId: String): String? = entriesByNotificationId[notificationId]?.systemKey
+
+    @Synchronized
+    fun removeSystemKey(systemKey: String): String? {
+        val notificationId = entriesByNotificationId.entries.firstOrNull { it.value.systemKey == systemKey }?.key ?: return null
+        entriesByNotificationId.remove(notificationId)
+        return notificationId
+    }
+
+    @Synchronized
+    fun removePackage(packageName: String): List<String> {
+        val notificationIds = entriesByNotificationId.filterValues { it.packageName == packageName }.keys.toList()
+        notificationIds.forEach(entriesByNotificationId::remove)
+        return notificationIds
+    }
+
+    @Synchronized
+    fun removeAll(): List<String> {
+        val notificationIds = entriesByNotificationId.keys.toList()
+        entriesByNotificationId.clear()
+        return notificationIds
+    }
+}
+
+internal fun shouldForwardNotification(
+    isPrimaryUser: Boolean,
+    isSYNQEnabled: Boolean,
+    isMasterNotificationsEnabled: Boolean,
+    ownPackageName: String,
+    notificationPackageName: String,
+    disabledPackages: Set<String>,
+): Boolean {
+    if (!isPrimaryUser || !isSYNQEnabled) return false
+    if (!isMasterNotificationsEnabled) return false
+    if (notificationPackageName == ownPackageName) return false
+    if (notificationPackageName in disabledPackages) return false
+    return true
+}
+
+internal fun notificationToken(systemKey: String): String = MessageDigest.getInstance("SHA-256")
+    .digest(systemKey.toByteArray(Charsets.UTF_8))
+    .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+internal fun notificationActionToken(notificationId: String, index: Int): String = notificationToken("$notificationId\u0000$index")
+
+internal fun shouldIgnoreOngoingNotification(flags: Int, category: String?): Boolean =
+    flags and Notification.FLAG_ONGOING_EVENT != 0 && category != Notification.CATEGORY_CALL
+
+internal fun notificationCallType(value: Int): String = when (value) {
+    1 -> "incoming"
+    2 -> "ongoing"
+    3 -> "screening"
+    else -> "unknown"
+}
+
+internal fun telephonyCallType(value: Int): String? = when (value) {
+    TelephonyManager.CALL_STATE_RINGING -> "incoming"
+    TelephonyManager.CALL_STATE_OFFHOOK -> "ongoing"
+    TelephonyManager.CALL_STATE_IDLE -> "idle"
+    else -> null
+}
+
+object NotificationAccess {
+    fun isEnabled(context: Context): Boolean {
+        val component = ComponentName(context, SYNQNotificationListenerService::class.java)
+        val enabled = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
+            ?: return false
+        return enabled.split(':').any { ComponentName.unflattenFromString(it) == component }
+    }
+}
