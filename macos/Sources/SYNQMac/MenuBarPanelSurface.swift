@@ -1,8 +1,9 @@
 import SwiftUI
 import AppKit
 
-/// A menu-bar surface that relies on the native system window material to avoid double-borders or shadows,
-/// while providing genuine Liquid Glass interaction to its component cards and actions.
+/// Keep the MenuBarExtra's own window as the only glass surface. Wrapping the
+/// content in a second NSGlassEffectView draws a second rim and clips the
+/// system popover's naturally rounded silhouette.
 struct MenuBarPanelSurface<Content: View>: View {
     private let content: Content
 
@@ -11,21 +12,32 @@ struct MenuBarPanelSurface<Content: View>: View {
     }
 
     var body: some View {
+        let panelShape = RoundedRectangle(cornerRadius: 32, style: .continuous)
         content
             .frame(width: 340, alignment: .topLeading)
-            .fixedSize(horizontal: false, vertical: true)
+            .background {
+                if #available(macOS 26.0, *) {
+                    Color.clear
+                        .glassEffect(.regular, in: panelShape)
+                } else {
+                    panelShape.fill(.regularMaterial)
+                }
+            }
             .background(MenuBarWindowAccessorRepresentable())
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)
-            )
     }
 }
 
 private struct MenuBarWindowAccessorRepresentable: NSViewRepresentable {
     func makeNSView(context: Context) -> MenuBarWindowAccessorView {
-        MenuBarWindowAccessorView()
+        let view = MenuBarWindowAccessorView()
+        // This representable exists only to configure the hosting popover.
+        // Keep its own backing layer transparent; otherwise its rectangular
+        // view can show through the curved corners when the home screen is
+        // restored after disconnecting.
+        view.wantsLayer = true
+        view.layer?.isOpaque = false
+        view.layer?.backgroundColor = NSColor.clear.cgColor
+        return view
     }
 
     func updateNSView(_ nsView: MenuBarWindowAccessorView, context: Context) {
@@ -41,21 +53,30 @@ final class MenuBarWindowAccessorView: NSView {
 
     func configureWindowIfNeeded() {
         guard let window = self.window else { return }
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.contentView?.wantsLayer = true
-        window.contentView?.layer?.cornerRadius = 16
-        window.contentView?.layer?.masksToBounds = true
-        window.hasShadow = true
-        window.invalidateShadow()
-
+        if #available(macOS 26.0, *) {
+            // The SwiftUI glass shape draws the panel. Let its rounded corners
+            // reveal the desktop instead of the rectangular popover backing.
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.hasShadow = false
+            if let contentView = window.contentView {
+                contentView.wantsLayer = true
+                contentView.layer?.isOpaque = false
+                contentView.layer?.backgroundColor = NSColor.clear.cgColor
+                contentView.layer?.cornerRadius = 32
+                contentView.layer?.cornerCurve = .continuous
+                contentView.layer?.masksToBounds = true
+            }
+        }
         MenuBarWindowPinner.shared.pinWindowTop(window)
+        MenuBarWindowPinner.shared.fitWindowToContent(window)
     }
 }
 
 final class MenuBarWindowPinner: NSObject {
     static let shared = MenuBarWindowPinner()
     private var lastTopYByWindow: [ObjectIdentifier: CGFloat] = [:]
+    private var fitWorkItems: [ObjectIdentifier: DispatchWorkItem] = [:]
 
     func pinWindowTop(_ window: NSWindow) {
         let id = ObjectIdentifier(window)
@@ -71,12 +92,6 @@ final class MenuBarWindowPinner: NSObject {
             )
             NotificationCenter.default.addObserver(
                 self,
-                selector: #selector(windowDidMove(_:)),
-                name: NSWindow.didMoveNotification,
-                object: window
-            )
-            NotificationCenter.default.addObserver(
-                self,
                 selector: #selector(windowWillClose(_:)),
                 name: NSWindow.willCloseNotification,
                 object: window
@@ -84,13 +99,32 @@ final class MenuBarWindowPinner: NSObject {
         }
     }
 
-    @objc private func windowDidMove(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow else { return }
+    func fitWindowToContent(_ window: NSWindow) {
         let id = ObjectIdentifier(window)
-        // If window is positioned or moved by AppKit/StatusItem, record its top
-        if window.isVisible && window.frame.height > 50 {
-            lastTopYByWindow[id] = window.frame.maxY
+        fitWorkItems[id]?.cancel()
+        let work = DispatchWorkItem { [weak self, weak window] in
+            guard let self, let window,
+                  window.contentView != nil else { return }
+            self.fitWindowToContentNow(window)
         }
+        fitWorkItems[id] = work
+        DispatchQueue.main.async(execute: work)
+    }
+
+    func fitWindowToContentNow(_ window: NSWindow) {
+        guard let contentView = window.contentView else { return }
+        contentView.layoutSubtreeIfNeeded()
+        let fittedHeight = (window.contentViewController?.view.fittingSize ?? contentView.fittingSize).height
+        guard fittedHeight.isFinite, fittedHeight > 50,
+              abs(window.frame.height - fittedHeight) > 1 else { return }
+
+        let id = ObjectIdentifier(window)
+        let top = lastTopYByWindow[id] ?? window.frame.maxY
+        lastTopYByWindow[id] = top
+        var frame = window.frame
+        frame.origin.y = top - fittedHeight
+        frame.size.height = fittedHeight
+        window.setFrame(frame, display: true, animate: false)
     }
 
     @objc private func windowDidResize(_ notification: Notification) {
@@ -112,69 +146,40 @@ final class MenuBarWindowPinner: NSObject {
         guard let window = notification.object as? NSWindow else { return }
         let id = ObjectIdentifier(window)
         lastTopYByWindow.removeValue(forKey: id)
+        fitWorkItems.removeValue(forKey: id)?.cancel()
         NotificationCenter.default.removeObserver(self, name: NSWindow.didResizeNotification, object: window)
-        NotificationCenter.default.removeObserver(self, name: NSWindow.didMoveNotification, object: window)
         NotificationCenter.default.removeObserver(self, name: NSWindow.willCloseNotification, object: window)
     }
 }
 
-/// A view modifier that applies authentic Apple Liquid Glass (`glassEffect`) where supported (macOS 26+),
-/// with native-feeling depth, translucency, and edge light refraction, falling back gracefully on macOS 13+.
-struct NativeGlassBackgroundModifier: ViewModifier {
-    let isPressed: Bool
-    let isHovered: Bool
+/// Content cards stay clear on current macOS so they sit directly on the native
+/// MenuBarExtra glass surface. Older systems get a restrained material fallback.
+struct NativeCardMaterialFallbackModifier: ViewModifier {
     let cornerRadius: CGFloat
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-    func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        if #available(macOS 26.0, *) {
-            let glass: Glass = isPressed
-                ? .regular.tint(Color.accentColor.opacity(0.3)).interactive()
-                : (isHovered ? .regular.tint(Color.white.opacity(0.12)).interactive() : .regular.interactive())
-            content
-                .glassEffect(glass, in: shape)
-        } else {
-            content
-                .background {
-                    if reduceTransparency {
-                        shape.fill(isPressed ? Color(nsColor: .selectedControlColor) : (isHovered ? Color(nsColor: .controlColor) : Color(nsColor: .controlBackgroundColor)))
-                    } else {
-                        shape.fill(isPressed ? Color.accentColor.opacity(0.22) : (isHovered ? Color.primary.opacity(0.10) : Color.primary.opacity(0.05)))
-                    }
-                }
-        }
-    }
-}
-
-/// A container card modifier utilizing native Liquid Glass on macOS 26+ without artificial strokes or double borders.
-struct NativeLiquidGlassCardModifier: ViewModifier {
-    let cornerRadius: CGFloat
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         if #available(macOS 26.0, *) {
             content
-                .glassEffect(.regular, in: shape)
         } else {
             content
-                .background(
-                    reduceTransparency ? Color(nsColor: .controlBackgroundColor) : Color.primary.opacity(0.05),
-                    in: shape
-                )
+                .background(.regularMaterial, in: shape)
         }
     }
 }
 
-/// Button style for menu bar quick actions with native hover, pressed states, and genuine Liquid Glass gating.
-struct NativeLiquidGlassActionButtonStyle: ButtonStyle {
-    @State private var isHovered = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .modifier(NativeGlassBackgroundModifier(isPressed: configuration.isPressed, isHovered: isHovered, cornerRadius: 10))
-            .onHover { isHovered = $0 }
+/// Use Apple's own glass button style on macOS 26+, with standard native
+/// bordered controls as the fallback for earlier deployment targets.
+struct NativeLiquidGlassButtonModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+                .buttonStyle(.glass)
+                .buttonBorderShape(.capsule)
+        } else {
+            content.buttonStyle(.bordered)
+        }
     }
 }
 
@@ -202,6 +207,6 @@ struct FileTransfersSummaryButton: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
         }
-        .buttonStyle(NativeLiquidGlassActionButtonStyle())
+        .modifier(NativeLiquidGlassButtonModifier())
     }
 }

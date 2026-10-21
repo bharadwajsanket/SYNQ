@@ -31,6 +31,7 @@ struct SyncedContact: Identifiable, Equatable, Hashable {
 @MainActor
 final class FavouriteContactsStore: ObservableObject {
     @Published private(set) var contacts: [FavouriteContact] = []
+    @Published private(set) var deviceFavourites: [FavouriteContact] = []
     @Published private(set) var syncedContacts: [SyncedContact] = []
     @Published var isSyncing: Bool = false
     @Published var syncStatus: String? = nil
@@ -38,6 +39,14 @@ final class FavouriteContactsStore: ObservableObject {
     private let defaults = UserDefaults.standard
     private let favouritesKey = "settings.favouriteContacts.v1"
     private let legacySyncedKey = "settings.syncedContacts.v1"
+
+    /// Called whenever the local favourites list is mutated so that the change
+    /// can be forwarded to the connected Android device.
+    var onFavouritesChanged: (([FavouriteContact]) -> Void)?
+
+    var allFavourites: [FavouriteContact] {
+        contacts
+    }
 
     init() {
         loadFavourites()
@@ -60,6 +69,7 @@ final class FavouriteContactsStore: ObservableObject {
 
         if !isDuplicate {
             contacts.append(FavouriteContact(name: trimmedName, number: trimmedNumber))
+            deviceFavourites = contacts
             saveFavourites()
         }
     }
@@ -68,16 +78,19 @@ final class FavouriteContactsStore: ObservableObject {
         guard let i = contacts.firstIndex(where: { $0.id == id }) else { return }
         contacts[i].name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         contacts[i].number = number.trimmingCharacters(in: .whitespacesAndNewlines)
+        deviceFavourites = contacts
         saveFavourites()
     }
 
     func remove(id: String) {
         contacts.removeAll { $0.id == id }
+        deviceFavourites.removeAll { $0.id == id }
         saveFavourites()
     }
 
     func move(from source: IndexSet, to destination: Int) {
         contacts.move(fromOffsets: source, toOffset: destination)
+        deviceFavourites = contacts
         saveFavourites()
     }
 
@@ -95,9 +108,27 @@ final class FavouriteContactsStore: ObservableObject {
         }
     }
 
+    private var syncTimeoutWorkItem: DispatchWorkItem?
+
     // MARK: – In-Memory Synced Contacts from Phone
 
+    func startSync() {
+        isSyncing = true
+        syncTimeoutWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.isSyncing else { return }
+            self.isSyncing = false
+            if self.syncedContacts.isEmpty {
+                self.syncStatus = "Phone did not respond. Check connection and try again."
+            }
+        }
+        syncTimeoutWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0, execute: item)
+    }
+
     func setSyncedContacts(_ list: [SyncedContact]) {
+        syncTimeoutWorkItem?.cancel()
+        syncTimeoutWorkItem = nil
         self.syncedContacts = list
         self.isSyncing = false
         if list.isEmpty {
@@ -107,7 +138,37 @@ final class FavouriteContactsStore: ObservableObject {
         }
     }
 
+    func setDeviceFavourites(_ list: [FavouriteContact], isInitialSync: Bool = false) {
+        if isInitialSync && !contacts.isEmpty {
+            var merged = list
+            var changed = false
+            for local in contacts {
+                let clean = normalizeNumber(local.number)
+                if !merged.contains(where: { normalizeNumber($0.number) == clean }) && merged.count < 30 {
+                    merged.append(local)
+                    changed = true
+                }
+            }
+            contacts = merged
+            deviceFavourites = merged
+            if let data = try? JSONEncoder().encode(contacts) {
+                defaults.set(data, forKey: favouritesKey)
+            }
+            if changed {
+                onFavouritesChanged?(contacts)
+            }
+        } else {
+            contacts = list
+            deviceFavourites = list
+            if let data = try? JSONEncoder().encode(contacts) {
+                defaults.set(data, forKey: favouritesKey)
+            }
+        }
+    }
+
     func setSyncError(_ message: String) {
+        syncTimeoutWorkItem?.cancel()
+        syncTimeoutWorkItem = nil
         self.isSyncing = false
         self.syncStatus = message
     }
@@ -129,11 +190,14 @@ final class FavouriteContactsStore: ObservableObject {
         guard let data = defaults.data(forKey: favouritesKey),
               let decoded = try? JSONDecoder().decode([FavouriteContact].self, from: data) else { return }
         contacts = decoded
+        deviceFavourites = decoded
     }
 
     private func saveFavourites() {
+        deviceFavourites = contacts
         guard let data = try? JSONEncoder().encode(contacts) else { return }
         defaults.set(data, forKey: favouritesKey)
+        onFavouritesChanged?(contacts)
     }
 
     private func normalizeNumber(_ num: String) -> String {

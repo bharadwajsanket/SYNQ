@@ -19,12 +19,13 @@
     <key>CFBundleIconName</key>
     <string>AppIcon</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>SYNQ discovers and connects to your paired Android devices on your local network.</string>
+	<string>SYNQ connects to your paired Android devices and temporarily receives files from nearby guests on your local network.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>When you enable media controls, SYNQ controls your selected Music or Spotify player and shares now-playing information with your paired phone.</string>
     <key>NSBonjourServices</key>
     <array>
         <string>_synq._tcp</string>
+        <string>_http._tcp</string>
     </array>
     <key>CFBundlePackageType</key>
     <string>APPL</string>

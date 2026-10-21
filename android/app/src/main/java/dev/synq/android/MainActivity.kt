@@ -153,6 +153,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var synqSettings: SYNQSettings
     private var notificationAccessEnabled by mutableStateOf(false)
     private var appNotificationsEnabled by mutableStateOf(false)
+    private var contactsPermissionGranted by mutableStateOf(false)
     private var sharedContent by mutableStateOf<SharedContent?>(null)
     private var showOnboarding by mutableStateOf(false)
     private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -164,34 +165,42 @@ class MainActivity : ComponentActivity() {
     }
     private val contactsPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         synqSettings.setContactsSyncEnabled(granted)
+        contactsPermissionGranted = granted
+        if (granted) {
+            pairing.sendContactsResponse()
+        }
     }
-    private val pickContactLauncher = registerForActivityResult(ActivityResultContracts.PickContact()) { uri ->
-        if (uri != null) {
+    private val pickContactLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val uri = result.data?.data
+        if (result.resultCode == android.app.Activity.RESULT_OK && uri != null) {
             try {
-                contentResolver.query(uri, arrayOf(ContactsContract.Contacts._ID, ContactsContract.Contacts.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                // Pick a phone row, not just a person. This lets the user
+                // choose the exact number when a contact has several.
+                contentResolver.query(
+                    uri,
+                    arrayOf(
+                        ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                        ContactsContract.CommonDataKinds.Phone.NUMBER,
+                    ),
+                    null,
+                    null,
+                    null,
+                )?.use { cursor ->
                     if (cursor.moveToFirst()) {
-                        val idIndex = cursor.getColumnIndex(ContactsContract.Contacts._ID)
-                        val nameIndex = cursor.getColumnIndex(ContactsContract.Contacts.DISPLAY_NAME)
-                        val contactId = if (idIndex >= 0) cursor.getString(idIndex) else null
+                        val nameIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                        val numberIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
                         val name = if (nameIndex >= 0) cursor.getString(nameIndex).orEmpty() else ""
-
-                        if (!contactId.isNullOrEmpty()) {
-                            contentResolver.query(
-                                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-                                arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
-                                "${ContactsContract.CommonDataKinds.Phone.CONTACT_ID} = ?",
-                                arrayOf(contactId),
-                                null,
-                            )?.use { phoneCursor ->
-                                if (phoneCursor.moveToFirst()) {
-                                    val numIndex = phoneCursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
-                                    val number = if (numIndex >= 0) phoneCursor.getString(numIndex).orEmpty() else ""
-                                    if (name.isNotBlank() && number.isNotBlank()) {
-                                        synqSettings.addFavouriteContact(name, number)
-                                        val synq = application as SYNQApplication
-                                        synq.pairing.sendFavouritesUpdate(synqSettings.state.value.favouriteContacts)
-                                    }
-                                }
+                        val number = if (numberIndex >= 0) cursor.getString(numberIndex).orEmpty() else ""
+                        if (name.isNotBlank() && number.isNotBlank()) {
+                            if (synqSettings.addFavouriteContact(name, number)) {
+                                val synq = application as SYNQApplication
+                                synq.pairing.sendFavouritesUpdate(synqSettings.state.value.favouriteContacts)
+                            } else {
+                                android.widget.Toast.makeText(
+                                    this,
+                                    "You can keep up to $MAX_FAVOURITE_CONTACTS favourites.",
+                                    android.widget.Toast.LENGTH_SHORT,
+                                ).show()
                             }
                         }
                     }
@@ -228,6 +237,7 @@ class MainActivity : ComponentActivity() {
                     onDeviceNameChanged = synq::updateDeviceName,
                     appNotificationsEnabled = appNotificationsEnabled,
                     notificationAccessEnabled = notificationAccessEnabled,
+                    contactsPermissionGranted = contactsPermissionGranted,
                     onTurnOff = {
                         startService(Intent(this, SYNQConnectionService::class.java).setAction(SYNQConnectionService.ACTION_TURN_OFF))
                         finishAndRemoveTask()
@@ -239,7 +249,11 @@ class MainActivity : ComponentActivity() {
                     },
                     onRequestDirectCalls = ::requestDirectCalls,
                     onRequestContacts = ::requestContacts,
-                    onPickContact = { pickContactLauncher.launch(null) },
+                    onPickContact = {
+                        pickContactLauncher.launch(
+                            Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI)
+                        )
+                    },
                     sharedContent = sharedContent,
                     onSharedContentHandled = ::clearSharedContent,
                     showOnboarding = showOnboarding,
@@ -293,6 +307,7 @@ class MainActivity : ComponentActivity() {
     private fun refreshPermissionState() {
         appNotificationsEnabled = getSystemService(NotificationManager::class.java).areNotificationsEnabled()
         notificationAccessEnabled = NotificationAccess.isEnabled(this)
+        contactsPermissionGranted = checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
         if (
             ::synqSettings.isInitialized && synqSettings.state.value.directCallsEnabled &&
             !hasCallIntegrationPermissions()
@@ -334,6 +349,7 @@ class MainActivity : ComponentActivity() {
     private fun requestContacts() {
         if (checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
             synqSettings.setContactsSyncEnabled(true)
+            pairing.sendContactsResponse()
         } else {
             contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
         }
@@ -382,6 +398,7 @@ private fun SYNQApp(
     onDeviceNameChanged: (String) -> Unit,
     appNotificationsEnabled: Boolean,
     notificationAccessEnabled: Boolean,
+    contactsPermissionGranted: Boolean,
     onTurnOff: () -> Unit,
     onRequestAppNotifications: () -> Unit,
     onOpenAppNotificationSettings: () -> Unit,
@@ -581,6 +598,7 @@ private fun SYNQApp(
             )
             NavDestination.SETTINGS -> SettingsScreen(
                 state = settingsState,
+                contactsPermissionGranted = contactsPermissionGranted,
                 trustedDevices = trustedDevices,
                 connectedDeviceId = (pairingState as? PairingState.Connected)?.deviceId,
                 remoteFeatures = remoteFeatures,
@@ -607,14 +625,20 @@ private fun SYNQApp(
                 },
                 onContactsSyncChanged = { enabled ->
                     if (enabled) {
-                        permissionPrompt = PermissionPrompt.Contacts
+                        if (contactsPermissionGranted) {
+                            settings.setContactsSyncEnabled(true)
+                            pairing.sendContactsResponse()
+                        } else {
+                            permissionPrompt = PermissionPrompt.Contacts
+                        }
                     } else {
                         settings.setContactsSyncEnabled(false)
                     }
                 },
                 onAddFavouriteContact = { name, number ->
-                    settings.addFavouriteContact(name, number)
-                    pairing.sendFavouritesUpdate(settings.state.value.favouriteContacts)
+                    val added = settings.addFavouriteContact(name, number)
+                    if (added) pairing.sendFavouritesUpdate(settings.state.value.favouriteContacts)
+                    added
                 },
                 onRemoveFavouriteContact = { id ->
                     settings.removeFavouriteContact(id)
@@ -1370,6 +1394,7 @@ private fun NotificationAppRow(
 @Composable
 private fun SettingsScreen(
     state: SYNQSettingsState,
+    contactsPermissionGranted: Boolean,
     trustedDevices: List<TrustedDevice>,
     connectedDeviceId: String?,
     remoteFeatures: Map<SYNQFeature, Boolean>,
@@ -1379,7 +1404,7 @@ private fun SettingsScreen(
     onGlobalFeatureChanged: (SYNQFeature, Boolean) -> Unit,
     onDirectCallsChanged: (Boolean) -> Unit,
     onContactsSyncChanged: (Boolean) -> Unit,
-    onAddFavouriteContact: (String, String) -> Unit,
+    onAddFavouriteContact: (String, String) -> Boolean,
     onRemoveFavouriteContact: (String) -> Unit,
     onPickContact: () -> Unit,
     onTurnOff: () -> Unit,
@@ -1416,6 +1441,13 @@ private fun SettingsScreen(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    if (state.favouriteContacts.size >= MAX_FAVOURITE_CONTACTS) {
+                        Text(
+                            "You already have $MAX_FAVOURITE_CONTACTS favourites. Remove one before adding another.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                 }
             },
             confirmButton = {
@@ -1424,13 +1456,15 @@ private fun SettingsScreen(
                         val name = newFavouriteName.trim()
                         val number = newFavouriteNumber.trim()
                         if (name.isNotEmpty() && number.isNotEmpty()) {
-                            onAddFavouriteContact(name, number)
-                            showAddFavouriteDialog = false
-                            newFavouriteName = ""
-                            newFavouriteNumber = ""
+                            if (onAddFavouriteContact(name, number)) {
+                                showAddFavouriteDialog = false
+                                newFavouriteName = ""
+                                newFavouriteNumber = ""
+                            }
                         }
                     },
-                    enabled = newFavouriteName.isNotBlank() && newFavouriteNumber.isNotBlank(),
+                    enabled = newFavouriteName.isNotBlank() && newFavouriteNumber.isNotBlank() &&
+                        state.favouriteContacts.size < MAX_FAVOURITE_CONTACTS,
                 ) {
                     Text("Save")
                 }
@@ -1529,6 +1563,14 @@ private fun SettingsScreen(
                 onContactsSyncChanged(it)
             }
         }
+        item {
+            ContactsSyncStatusCard(
+                state = state,
+                permissionGranted = contactsPermissionGranted,
+                isConnected = connectedDeviceId != null,
+                onEnableSync = { onContactsSyncChanged(true) },
+            )
+        }
 
         // Favourite Contacts Section
         item { SectionTitle("Favourite contacts") }
@@ -1541,7 +1583,7 @@ private fun SettingsScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text("Favourite contacts (${state.favouriteContacts.size}/30)", fontWeight = FontWeight.SemiBold)
+                            Text("Favourite contacts (${state.favouriteContacts.size}/$MAX_FAVOURITE_CONTACTS)", fontWeight = FontWeight.SemiBold)
                             Text(
                                 "Quick-dial contacts synced with your Mac",
                                 style = MaterialTheme.typography.bodySmall,
@@ -1551,17 +1593,26 @@ private fun SettingsScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(
                                 onClick = onPickContact,
+                                enabled = state.favouriteContacts.size < MAX_FAVOURITE_CONTACTS,
                                 shape = RoundedCornerShape(12.dp),
                             ) {
                                 Text("Pick")
                             }
                             Button(
                                 onClick = { showAddFavouriteDialog = true },
+                                enabled = state.favouriteContacts.size < MAX_FAVOURITE_CONTACTS,
                                 shape = RoundedCornerShape(12.dp),
                             ) {
                                 Text("Manual")
                             }
                         }
+                    }
+                    if (state.favouriteContacts.size >= MAX_FAVOURITE_CONTACTS) {
+                        Text(
+                            "You can keep up to $MAX_FAVOURITE_CONTACTS favourites. Remove one to add another.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                     if (state.favouriteContacts.isEmpty()) {
                         Text(
@@ -1641,6 +1692,52 @@ private fun SettingsScreen(
         }
 
         item { Spacer(Modifier.height(16.dp)) }
+    }
+}
+
+@Composable
+private fun ContactsSyncStatusCard(
+    state: SYNQSettingsState,
+    permissionGranted: Boolean,
+    isConnected: Boolean,
+    onEnableSync: () -> Unit,
+) {
+    val status = when {
+        !state.contactsSyncEnabled -> "Contact sync is off. Turn it on to share phone contacts with your Mac."
+        !permissionGranted -> "Contacts permission is missing. Allow access so SYNQ can read your phone contacts."
+        !isConnected -> "Permission is ready. Connect to your Mac; contacts sync when Mac requests them."
+        state.lastContactsSyncCount == null -> "Ready. Open Call from Mac and choose Sync from Phone to send contacts."
+        state.lastContactsSyncCount == 0 -> "Last sync found no contacts with phone numbers."
+        else -> "Last sync sent ${state.lastContactsSyncCount} contacts."
+    }
+    val syncedAt = state.lastContactsSyncAtMillis?.let { timestamp ->
+        android.text.format.DateUtils.getRelativeTimeSpanString(
+            timestamp,
+            System.currentTimeMillis(),
+            android.text.format.DateUtils.MINUTE_IN_MILLIS,
+        ).toString()
+    }
+
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("Contact sync status", fontWeight = FontWeight.SemiBold)
+            Text(status, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (syncedAt != null) {
+                Text("Last successful sync: $syncedAt", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (!state.contactsSyncEnabled || !permissionGranted) {
+                OutlinedButton(onClick = onEnableSync, shape = RoundedCornerShape(12.dp)) {
+                    Text(if (!state.contactsSyncEnabled) "Enable contact sync" else "Grant contacts permission")
+                }
+            }
+        }
     }
 }
 

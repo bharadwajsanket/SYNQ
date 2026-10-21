@@ -7,8 +7,7 @@ enum CallPickerTab: String, CaseIterable {
     case allContacts = "All Contacts"
 }
 
-/// Expanded panel shown below the Call action button.
-/// Shows favourite contacts and all contacts synced from the phone with search, multi-number selection, and quick-dial.
+/// In-panel calling screen showing favourites, synced contacts, and quick-dial controls.
 struct CallContactPickerView: View {
     @ObservedObject var favourites: FavouriteContactsStore
     let onDial: (String) -> Void
@@ -20,118 +19,205 @@ struct CallContactPickerView: View {
     @State private var manualNumber: String = ""
     @State private var searchQuery: String = ""
     @State private var showAddSheet = false
+    @State private var pendingCall: PendingContactCall?
+
+    private struct PendingContactCall: Identifiable {
+        let id = UUID()
+        let name: String
+        let number: String
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // Header
-            HStack {
-                Label("Call from Mac", systemImage: "phone.arrow.up.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.primary)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Button(action: onClose) { Label("Back", systemImage: "chevron.left") }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                .accessibilityLabel("Back to SYNQ")
                 Spacer()
-                Button { onClose() } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.tertiary)
+                VStack(spacing: 2) {
+                    Text("Call from Mac").font(.headline)
+                    Text("Calls are placed from your phone")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Close call picker")
+                Spacer()
+                Image(systemName: "phone.arrow.up.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 30, height: 30)
+                    .background(Color.accentColor.opacity(0.10), in: Circle())
             }
 
             // Tab selector (Favourites / All Contacts)
             Picker("", selection: $selectedTab) {
-                Text("Favourites (\(favourites.contacts.count))")
+                Text("Favourites (\(favourites.allFavourites.count))")
                     .tag(CallPickerTab.favourites)
                 Text("All Contacts (\(favourites.syncedContacts.count))")
                     .tag(CallPickerTab.allContacts)
             }
             .pickerStyle(.segmented)
+            .tint(Color.accentColor)
 
             Divider()
 
-            switch selectedTab {
-            case .favourites:
-                favouritesSection
-            case .allContacts:
-                allContactsSection
-            }
-
-            Divider()
-
-            // ── Manual entry fallback ─────────────────────────────────────
-            HStack(spacing: 6) {
-                Image(systemName: "number")
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-                TextField("Enter number or paste from clipboard", text: $manualNumber)
-                    .font(.caption)
-                    .textFieldStyle(.plain)
-                    .onSubmit { dialManual() }
-                if !manualNumber.isEmpty {
-                    Button { dialManual() } label: {
-                        Image(systemName: "phone.fill")
-                            .foregroundStyle(Color.accentColor)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Dial")
-                } else {
-                    Button("Clipboard") { onManualDial() }
-                        .buttonStyle(.plain)
-                        .font(.caption)
-                        .foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 10) {
+                switch selectedTab {
+                case .favourites:
+                    favouritesSection
+                case .allContacts:
+                    allContactsSection
                 }
             }
-            .padding(8)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            Divider()
+
+            manualDialBar
         }
-        .padding(12)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(.white.opacity(0.08), lineWidth: 0.5)
-        )
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear {
+            if favourites.allFavourites.isEmpty && !favourites.syncedContacts.isEmpty {
+                selectedTab = .allContacts
+            }
+        }
+        .onChange(of: favourites.syncedContacts.count) { count in
+            if favourites.allFavourites.isEmpty && count > 0 {
+                selectedTab = .allContacts
+            }
+        }
+        .alert(item: $pendingCall) { target in
+            Alert(
+                title: Text("Call \(target.name)?"),
+                message: Text("Place a call to \(target.number) using your phone?"),
+                primaryButton: .default(Text("Call")) { onDial(target.number) },
+                secondaryButton: .cancel()
+            )
+        }
+    }
+
+    private var manualDialBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "phone")
+                .foregroundStyle(.secondary)
+            TextField("Phone number", text: $manualNumber)
+                .textFieldStyle(.plain)
+                .onSubmit { dialManual() }
+            Button(action: onManualDial) {
+                Image(systemName: "doc.on.clipboard")
+            }
+            .buttonStyle(.borderless)
+            .help("Paste number from clipboard")
+            if !manualNumber.isEmpty {
+                Button(action: dialManual) {
+                    Label("Call", systemImage: "phone.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .keyboardShortcut(.return, modifiers: [])
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
     }
 
     // MARK: - Favourites View
     @ViewBuilder
     private var favouritesSection: some View {
-        if favourites.contacts.isEmpty {
-            VStack(spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: "star.slash")
-                        .foregroundStyle(.tertiary)
-                        .font(.caption)
-                    Text("No favourites yet — select a contact below")
+        VStack(alignment: .leading, spacing: 8) {
+            if favourites.isSyncing {
+                VStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.regular)
+                    Text("Syncing contacts from phone…")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                .padding(.vertical, 4)
-            }
-        } else {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(favourites.contacts) { contact in
-                        FavouriteContactChip(contact: contact) {
-                            onDial(contact.number)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.top, 30)
+            } else if favourites.allFavourites.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "phone.arrow.up.right")
+                        .font(.system(size: 26))
+                        .foregroundStyle(Color.accentColor.opacity(0.8))
+                    Text("Your favourite contacts appear here")
+                        .font(.caption.weight(.medium))
+                    if let status = favourites.syncStatus, !status.contains("available") {
+                        Text(status)
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 16)
+                    } else {
+                        Text("Add one from your synced phone contacts.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !favourites.syncedContacts.isEmpty {
+                        Button {
+                            selectedTab = .allContacts
+                        } label: {
+                            Label("Browse \(favourites.syncedContacts.count) contacts", systemImage: "person.crop.rectangle.stack")
+                                .font(.system(size: 11, weight: .semibold))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 7)
+                                .background(Color.accentColor.opacity(0.13), in: Capsule())
                         }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
+                    } else {
+                        Button {
+                            favourites.startSync()
+                            onSyncContacts?()
+                        } label: {
+                            Label("Sync from Phone", systemImage: "arrow.clockwise")
+                                .font(.system(size: 11, weight: .semibold))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 7)
+                                .background(Color.accentColor.opacity(0.13), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
                     }
                 }
-                .padding(.horizontal, 2)
-                .padding(.vertical, 2)
+                .frame(maxWidth: .infinity, alignment: .top)
+                .padding(.top, 20)
+            } else {
+                HStack {
+                    Label("Favourites", systemImage: "star.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("Tap to call")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                        ForEach(favourites.allFavourites) { contact in
+                            FavouriteContactTile(contact: contact) {
+                                requestCall(name: contact.name, number: contact.number)
+                            }
+                        }
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            Button {
+                showAddSheet = true
+            } label: {
+                Label("Add favourite contact", systemImage: "star.badge.plus")
+                    .font(.caption)
+                    .foregroundStyle(Color.accentColor)
+            }
+            .buttonStyle(.plain)
+            .sheet(isPresented: $showAddSheet) {
+                AddFavouriteSheet(store: favourites)
             }
         }
-
-        // Add favourite button
-        Button {
-            showAddSheet = true
-        } label: {
-            Label("Add favourite contact", systemImage: "star.badge.plus")
-                .font(.caption)
-                .foregroundStyle(Color.accentColor)
-        }
-        .buttonStyle(.plain)
-        .sheet(isPresented: $showAddSheet) {
-            AddFavouriteSheet(store: favourites)
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     // MARK: - All Contacts View
@@ -161,12 +247,41 @@ struct CallContactPickerView: View {
             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
 
             let filtered = favourites.filteredContacts(query: searchQuery)
-            if filtered.isEmpty {
+            if favourites.isSyncing && favourites.syncedContacts.isEmpty {
+                VStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.regular)
+                    Text("Syncing contacts from phone…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+            } else if filtered.isEmpty {
                 VStack(spacing: 8) {
                     if favourites.syncedContacts.isEmpty {
                         Text("No contacts synced from phone yet.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        if let status = favourites.syncStatus, !status.contains("available") {
+                            Text(status)
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 16)
+                        }
+                        Button {
+                            favourites.startSync()
+                            onSyncContacts?()
+                        } label: {
+                            Label("Sync from Phone", systemImage: "arrow.clockwise")
+                                .font(.system(size: 11, weight: .semibold))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color.accentColor.opacity(0.13), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
                     } else {
                         Text("No contacts matching \"\(searchQuery)\"")
                             .font(.caption)
@@ -182,13 +297,13 @@ struct CallContactPickerView: View {
                             SyncedContactRowView(
                                 contact: contact,
                                 isFavourite: { num in favourites.isFavourite(number: num) },
-                                onDialNumber: { num in onDial(num) },
+                                onDialNumber: { num in requestCall(name: contact.name, number: num) },
                                 onToggleFavourite: { name, num in favourites.toggleFavourite(name: name, number: num) }
                             )
                         }
                     }
                 }
-                .frame(maxHeight: 180)
+                .frame(maxHeight: .infinity)
             }
 
             // Sync from Phone action row
@@ -201,7 +316,7 @@ struct CallContactPickerView: View {
                 }
                 Spacer()
                 Button {
-                    favourites.isSyncing = true
+                    favourites.startSync()
                     onSyncContacts?()
                 } label: {
                     HStack(spacing: 4) {
@@ -224,6 +339,10 @@ struct CallContactPickerView: View {
         guard !trimmed.isEmpty else { return }
         onDial(trimmed)
         manualNumber = ""
+    }
+
+    private func requestCall(name: String, number: String) {
+        pendingCall = PendingContactCall(name: name, number: number)
     }
 }
 
@@ -275,7 +394,7 @@ struct SyncedContactRowView: View {
                     Button {
                         onToggleFavourite(contact.name, single)
                     } label: {
-                        Image(systemName: isFavourite(single) ? "star.fill" : "star")
+                            Image(systemName: isFavourite(single) ? "star.fill" : "star")
                             .font(.system(size: 12))
                             .foregroundStyle(isFavourite(single) ? Color.yellow : Color.secondary.opacity(0.6))
                     }
@@ -375,6 +494,52 @@ struct SyncedContactRowView: View {
 }
 
 // MARK: - Favourite Contact Chip
+
+/// Larger, full-width hit target for a favourite in the two-column call grid.
+private struct FavouriteContactTile: View {
+    let contact: FavouriteContact
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(LinearGradient(
+                            colors: [Color.accentColor.opacity(0.85), Color.accentColor.opacity(0.55)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ))
+                        .frame(width: 40, height: 40)
+                    Text(contact.initial)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(contact.name)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                    Text(contact.number)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "phone.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+            .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+            .contentShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Call \(contact.name), \(contact.number)")
+        .help("Call \(contact.name)")
+    }
+}
 
 struct FavouriteContactChip: View {
     let contact: FavouriteContact

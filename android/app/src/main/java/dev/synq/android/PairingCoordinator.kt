@@ -1144,9 +1144,20 @@ class PairingCoordinator(
         diagnostics.record("calls", "request", outcome = result.name.lowercase())
     }
 
+    fun sendContactsResponse(requestId: String? = null) {
+        val current = session ?: return
+        if (mutableState.value !is PairingState.Connected || current.pairingKey == null) return
+        val messageId = UUID.randomUUID().toString()
+        dispatchContacts(current, messageId)
+    }
+
     private fun receiveContactsRequest(current: Session, message: Message) {
         val messageId = message.messageId ?: return
         if (mutableState.value !is PairingState.Connected || message.sessionId != current.id || !current.acceptMessageId(messageId)) return
+        dispatchContacts(current, UUID.randomUUID().toString())
+    }
+
+    private fun dispatchContacts(current: Session, messageId: String) {
         if (!settings.state.value.contactsSyncEnabled) {
             current.send(Message(kind = "contacts.disabled", sessionId = current.id, messageId = messageId))
             return
@@ -1160,27 +1171,48 @@ class PairingCoordinator(
             ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
             ContactsContract.CommonDataKinds.Phone.NUMBER,
         )
-        val cursor = appContext.contentResolver.query(
-            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-            projection,
-            null,
-            null,
-            "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} ASC",
-        )
-        cursor?.use { c ->
-            val nameIndex = c.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
-            val numberIndex = c.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
-            val seen = mutableSetOf<String>()
-            while (c.moveToNext() && contactsArray.length() < 500) {
-                val name = if (nameIndex >= 0) c.getString(nameIndex)?.trim().orEmpty() else ""
-                val number = if (numberIndex >= 0) c.getString(numberIndex)?.trim().orEmpty() else ""
-                if (name.isNotEmpty() && number.isNotEmpty() && seen.add("$name|$number")) {
-                    contactsArray.put(JSONObject().put("name", name).put("number", number))
+        val cursor = try {
+            appContext.contentResolver.query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                projection,
+                null,
+                null,
+                "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} ASC",
+            )
+        } catch (_: SecurityException) {
+            current.send(Message(kind = "contacts.permission_needed", sessionId = current.id, messageId = messageId))
+            return
+        } catch (_: RuntimeException) {
+            current.send(Message(kind = "contacts.unavailable", sessionId = current.id, messageId = messageId))
+            return
+        }
+        if (cursor == null) {
+            current.send(Message(kind = "contacts.unavailable", sessionId = current.id, messageId = messageId))
+            return
+        }
+        try {
+            cursor.use { c ->
+                val nameIndex = c.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                val numberIndex = c.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                val seen = mutableSetOf<String>()
+                while (c.moveToNext() && contactsArray.length() < 300) {
+                    val name = if (nameIndex >= 0) c.getString(nameIndex)?.trim().orEmpty() else ""
+                    val number = if (numberIndex >= 0) c.getString(numberIndex)?.trim().orEmpty() else ""
+                    val numberKey = number.filter(Char::isDigit)
+                    if (name.isNotEmpty() && number.isNotEmpty() && seen.add("$name|$numberKey")) {
+                        contactsArray.put(JSONObject().put("name", name).put("number", number))
+                    }
                 }
             }
+        } catch (_: SecurityException) {
+            current.send(Message(kind = "contacts.permission_needed", sessionId = current.id, messageId = messageId))
+            return
+        } catch (_: RuntimeException) {
+            current.send(Message(kind = "contacts.unavailable", sessionId = current.id, messageId = messageId))
+            return
         }
         val favouritesArray = JSONArray()
-        settings.state.value.favouriteContacts.forEach {
+        settings.state.value.favouriteContacts.take(MAX_FAVOURITE_CONTACTS).forEach {
             favouritesArray.put(JSONObject().put("id", it.id).put("name", it.name).put("number", it.number))
         }
         val payload = JSONObject()
@@ -1190,16 +1222,23 @@ class PairingCoordinator(
             .toString()
             .toByteArray(Charsets.UTF_8)
         val encrypted = Crypto.encrypt(current.pairingKey!!, payload)
-        current.send(
-            Message(
-                kind = "contacts.response",
-                sessionId = current.id,
-                messageId = messageId,
-                nonce = encrypted.nonce,
-                ciphertext = encrypted.ciphertext,
-            ),
+        val response = Message(
+            kind = "contacts.response",
+            sessionId = current.id,
+            messageId = messageId,
+            nonce = encrypted.nonce,
+            ciphertext = encrypted.ciphertext,
         )
-        diagnostics.record("contacts", "sync", outcome = "sent_${contactsArray.length()}")
+        scope.launch {
+            val sent = current.send(response)
+            if (sent) {
+                settings.recordContactsSync(contactsArray.length())
+                diagnostics.record("contacts", "sync", outcome = "sent_${contactsArray.length()}")
+                android.util.Log.i("SYNQ", "PLUGIN contacts response sent count=${contactsArray.length()}")
+            } else {
+                diagnostics.record("contacts", "sync", outcome = "send_failed")
+            }
+        }
     }
 
     private fun receiveFavouritesUpdate(current: Session, message: Message) {
@@ -1210,17 +1249,20 @@ class PairingCoordinator(
         val plaintext = Crypto.decrypt(current.pairingKey!!, nonce, ciphertext) ?: return
         val payload = runCatching { JSONObject(plaintext.toString(Charsets.UTF_8)) }.getOrNull() ?: return
         val array = payload.optJSONArray("favourites") ?: return
-        val updated = mutableListOf<ContactItem>()
-        for (i in 0 until array.length()) {
-            val obj = array.getJSONObject(i)
-            updated.add(
-                ContactItem(
-                    id = obj.optString("id", UUID.randomUUID().toString()),
-                    name = obj.getString("name"),
-                    number = obj.getString("number"),
-                )
-            )
-        }
+        val updated = runCatching {
+            buildList {
+                for (i in 0 until minOf(array.length(), MAX_FAVOURITE_CONTACTS)) {
+                    val obj = array.getJSONObject(i)
+                    add(
+                        ContactItem(
+                            id = obj.optString("id", UUID.randomUUID().toString()),
+                            name = obj.optString("name"),
+                            number = obj.optString("number"),
+                        )
+                    )
+                }
+            }
+        }.getOrNull() ?: return
         settings.setFavouriteContacts(updated)
     }
 
@@ -1228,20 +1270,24 @@ class PairingCoordinator(
         val current = session ?: return
         if (mutableState.value !is PairingState.Connected || current.pairingKey == null) return
         val array = JSONArray()
-        list.forEach {
+        list.take(MAX_FAVOURITE_CONTACTS).forEach {
             array.put(JSONObject().put("id", it.id).put("name", it.name).put("number", it.number))
         }
         val payload = JSONObject().put("version", 1).put("favourites", array).toString().toByteArray(Charsets.UTF_8)
         val encrypted = Crypto.encrypt(current.pairingKey!!, payload)
-        current.send(
-            Message(
-                kind = "favourites.update",
-                sessionId = current.id,
-                messageId = UUID.randomUUID().toString(),
-                nonce = encrypted.nonce,
-                ciphertext = encrypted.ciphertext,
-            )
+        val message = Message(
+            kind = "favourites.update",
+            sessionId = current.id,
+            messageId = UUID.randomUUID().toString(),
+            nonce = encrypted.nonce,
+            ciphertext = encrypted.ciphertext,
         )
+        scope.launch {
+            if (session !== current || mutableState.value !is PairingState.Connected) return@launch
+            if (current.send(message)) {
+                android.util.Log.i("SYNQ", "PLUGIN favourites update sent count=${list.take(MAX_FAVOURITE_CONTACTS).size}")
+            }
+        }
     }
 
     private fun receiveNotificationAction(current: Session, message: Message) {
@@ -1506,11 +1552,16 @@ class PairingCoordinator(
     }
 
     private fun completeIfConfirmed(current: Session) {
-        if (current.localConfirmed && current.remoteConfirmed) {
+        if (current.localConfirmed && current.remoteConfirmed && mutableState.value !is PairingState.Connected) {
             trust.save(current.remoteDeviceId, current.peerName, current.remoteIdentityKey!!)
             mutableState.value = PairingState.Connected(current.remoteDeviceId, current.peerName)
             diagnostics.record("pairing", "connected")
             sendFeatureState()
+            // Favourites are explicitly selected data and can be synced even
+            // when full address-book sync is turned off or not yet permitted.
+            // Sending them here also restores them on reconnect after an app
+            // restart, instead of waiting for the user to edit a favourite.
+            sendFavouritesUpdate(settings.state.value.favouriteContacts)
             android.util.Log.i("SYNQ", "PAIRING verified peer=${current.peerName}")
         }
     }

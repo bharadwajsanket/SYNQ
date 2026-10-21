@@ -77,3 +77,116 @@ private struct FileDropView: View {
         .frame(minWidth: 400, minHeight: 240)
     }
 }
+
+/// File sharing shown in the menu-bar panel alongside Call and Guest Share.
+struct FileDropPopoverView: View {
+    @ObservedObject var pairing: PairingCoordinator
+    let onBack: () -> Void
+    @State private var isTargeted = false
+
+    private var canSend: Bool {
+        guard case .connected = pairing.state else { return false }
+        return pairing.isFeatureAvailable(.files)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button(action: onBack) {
+                    Label("Back", systemImage: "chevron.left")
+                        .font(.system(size: 12, weight: .medium))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(Color.primary.opacity(0.08), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                .accessibilityLabel("Back to SYNQ")
+                Spacer()
+                Label("File Drop", systemImage: "arrow.down.doc")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    pairing.chooseAndSendFile()
+                } label: {
+                    Label("Choose", systemImage: "folder")
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(Color.accentColor.opacity(0.13), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                .disabled(!canSend)
+            }
+            .padding(.bottom, 12)
+
+            Divider()
+
+            Text(canSend
+                 ? "Send a file to your connected phone"
+                 : "Connect your phone and enable File transfer to send files.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 12)
+                .padding(.bottom, 10)
+
+            VStack(spacing: 10) {
+                Image(systemName: isTargeted ? "arrow.down.doc.fill" : "doc.badge.arrow.up")
+                    .font(.system(size: 34, weight: .regular))
+                    .foregroundStyle(canSend ? Color.accentColor : Color.secondary)
+                Text(canSend ? "Drop a file here" : "File sharing unavailable")
+                    .font(.subheadline.weight(.semibold))
+                Text(canSend
+                     ? "Or use Choose above to select a file."
+                     : "Reconnect your Android device to continue.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(18)
+            .background(
+                (isTargeted ? Color.accentColor.opacity(0.17) : Color.accentColor.opacity(0.07)),
+                in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .strokeBorder(
+                        Color.accentColor.opacity(canSend ? 0.55 : 0.22),
+                        style: StrokeStyle(lineWidth: 1.5, dash: [7])
+                    )
+            }
+            .dropDestination(for: URL.self) { urls, _ in
+                guard canSend, !urls.isEmpty else { return false }
+                return pairing.sendDroppedFiles(urls)
+            } isTargeted: { isTargeted = $0 }
+            .accessibilityLabel("File drop area")
+            .accessibilityHint("Drop files to send them to the connected Android device")
+            .padding(.bottom, 12)
+
+            Divider()
+
+            HStack(spacing: 7) {
+                Image(systemName: canSend ? "checkmark.circle.fill" : "info.circle")
+                    .foregroundStyle(canSend ? Color.green : Color.secondary)
+                Text(canSend ? "Securely connected" : "No active phone connection")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if let status = pairing.fileTransferStatus {
+                    Text(status)
+                        .font(.caption2)
+                        .lineLimit(1)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.top, 10)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}

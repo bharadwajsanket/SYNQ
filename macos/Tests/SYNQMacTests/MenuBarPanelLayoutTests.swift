@@ -66,6 +66,31 @@ final class MenuBarPanelLayoutTests: XCTestCase {
         window.orderOut(nil)
     }
 
+    @MainActor func testWindowShrinksToFittedContentAfterPickerCloses() {
+        let host = NSHostingController(rootView: fixture(height: 480, transfers: 0))
+        let window = NSWindow(
+            contentRect: NSRect(x: 200, y: 200, width: 340, height: 800),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = host
+        window.orderFront(nil)
+        let pinner = MenuBarWindowPinner()
+        pinner.pinWindowTop(window)
+        let expandedHeight = host.view.fittingSize.height
+        XCTAssertGreaterThan(expandedHeight, 400)
+
+        host.rootView = fixture(height: 120, transfers: 0)
+        host.view.layoutSubtreeIfNeeded()
+        let compactHeight = host.view.fittingSize.height
+        XCTAssertLessThan(compactHeight, expandedHeight - 300)
+        pinner.fitWindowToContentNow(window)
+
+        XCTAssertEqual(window.frame.height, compactHeight, accuracy: 1)
+        window.orderOut(nil)
+    }
+
     @MainActor private func fixture(height: CGFloat, transfers: Int) -> some View {
         MenuBarPanelSurface {
             VStack(alignment: .leading, spacing: 14) {

@@ -117,15 +117,6 @@ public struct GuestTransferView: View {
                                 .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
 
                             HStack(spacing: 6) {
-                                if manager.localIP != "127.0.0.1" {
-                                    Button(manager.hostPreference == .friendly ? "Use IP" : "Use synq.local") {
-                                        manager.hostPreference = (manager.hostPreference == .friendly) ? .ip : .friendly
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-                                    .help(manager.hostPreference == .friendly ? "Switch to direct local IP address (\(manager.localIP))" : "Switch to friendly synq.local hostname")
-                                }
-
                                 Button("Copy Link") {
                                     NSPasteboard.general.clearContents()
                                     NSPasteboard.general.setString(urlStr, forType: .string)
@@ -256,5 +247,221 @@ public struct GuestTransferView: View {
         let minutes = seconds / 60
         let remainingSeconds = seconds % 60
         return String(format: "%02d:%02d", minutes, remainingSeconds)
+    }
+}
+
+/// Compact guest-receive experience embedded directly in the menu-bar panel.
+struct GuestTransferPopoverView: View {
+    @ObservedObject var manager: GuestTransferManager
+    let onBack: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Button(action: onBack) {
+                    Label("Back", systemImage: "chevron.left")
+                        .font(.system(size: 12, weight: .medium))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(Color.primary.opacity(0.08), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                .accessibilityLabel("Back to SYNQ")
+                Spacer()
+                Text("Guest Share").font(.headline)
+                Spacer()
+                if manager.isSessionActive {
+                    Label(formattedTime(manager.timeRemaining), systemImage: "clock")
+                        .labelStyle(.titleOnly)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(Color.green.opacity(0.12), in: Capsule())
+                        .foregroundStyle(.green)
+                } else {
+                    Color.clear.frame(width: 54, height: 1)
+                }
+            }
+            .padding(.bottom, 12)
+
+            Divider()
+
+            if let image = manager.qrCodeImage, manager.isSessionActive {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .center, spacing: 12) {
+                        Image(nsImage: image)
+                            .interpolation(.none)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 116, height: 116)
+                            .padding(7)
+                            .background(.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        VStack(alignment: .leading, spacing: 7) {
+                            Label("Ready to receive", systemImage: "checkmark.circle.fill")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.green)
+                            Text("Let a guest scan this code with their camera. No SYNQ app needed.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if let url = manager.sessionURLString {
+                                Text(url)
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .textSelection(.enabled)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 6)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            }
+                        }
+                    }
+
+                    HStack(spacing: 8) {
+                        if let url = manager.sessionURLString {
+                            guestActionPill("Copy link", icon: "link") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(url, forType: .string)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .padding(.vertical, 12)
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "qrcode")
+                        .font(.system(size: 26, weight: .regular))
+                        .foregroundStyle(Color.accentColor)
+                    Text(manager.errorMessage ?? "Start a temporary session to receive files.")
+                        .font(.caption)
+                        .foregroundStyle(manager.errorMessage == nil ? Color.secondary : Color.red)
+                        .multilineTextAlignment(.center)
+                    Button("Start Guest Session") { manager.startSession() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+            }
+
+            Divider()
+
+            HStack {
+                Label("Received files", systemImage: "tray.and.arrow.down")
+                    .font(.subheadline.weight(.semibold))
+                Text("\(manager.pendingUploads.count)")
+                    .font(.caption2.weight(.semibold).monospacedDigit())
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Color.primary.opacity(0.08), in: Capsule())
+                Spacer()
+                if manager.pendingUploads.contains(where: { $0.status == .pending }) {
+                    guestActionPill("Accept all", icon: "checkmark") { manager.acceptAll() }
+                }
+            }
+            .padding(.top, 12)
+            .padding(.bottom, 8)
+
+            Group {
+                if manager.pendingUploads.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "tray")
+                            .font(.system(size: 22, weight: .regular))
+                            .foregroundStyle(.secondary)
+                        Text("Files shared by guests will appear here")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        Text("You’ll review each file before it’s saved.")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 7) {
+                            ForEach(manager.pendingUploads) { upload in
+                                HStack(spacing: 7) {
+                                    Image(systemName: "doc")
+                                        .foregroundStyle(.secondary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(upload.filename).font(.caption.weight(.medium)).lineLimit(1)
+                                        Text(ByteCountFormatter.string(fromByteCount: upload.fileSize, countStyle: .file))
+                                            .font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                    Spacer(minLength: 4)
+                                    switch upload.status {
+                                    case .pending:
+                                        guestActionPill("Reject", icon: "xmark", destructive: true) { manager.rejectUpload(upload) }
+                                        guestActionPill("Accept", icon: "checkmark") { manager.acceptUpload(upload) }
+                                    case .accepted:
+                                        Label("Saved", systemImage: "checkmark.circle.fill")
+                                            .font(.caption2).foregroundStyle(.green)
+                                    case .rejected:
+                                        Text("Rejected").font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                }
+                                .padding(8)
+                                .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            }
+                        }
+                    }
+                    .frame(maxHeight: .infinity)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.bottom, 10)
+
+            Divider()
+
+            HStack {
+                if let error = manager.errorMessage, manager.isSessionActive {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2).foregroundStyle(.red).lineLimit(1)
+                }
+                Spacer()
+                guestActionPill(manager.isSessionActive ? "End session" : "Close", icon: "stop.fill", destructive: true) {
+                    manager.cancelSession()
+                }
+                .disabled(!manager.isSessionActive)
+            }
+            .padding(.top, 10)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear {
+            if !manager.isSessionActive { manager.startSession() }
+        }
+    }
+
+    private func guestActionPill(
+        _ title: String,
+        icon: String,
+        destructive: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(.system(size: 10, weight: .semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .foregroundStyle(destructive ? Color.red : Color.accentColor)
+                .background(
+                    (destructive ? Color.red : Color.accentColor).opacity(0.12),
+                    in: Capsule()
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func formattedTime(_ interval: TimeInterval) -> String {
+        let seconds = max(0, Int(interval))
+        return String(format: "%02d:%02d", seconds / 60, seconds % 60)
     }
 }

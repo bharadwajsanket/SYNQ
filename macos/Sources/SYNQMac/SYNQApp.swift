@@ -181,7 +181,7 @@ struct SYNQApp: App {
     @StateObject private var discovery: BonjourDiscovery
     @StateObject private var pairing: PairingCoordinator
     @StateObject private var settings: SYNQSettings
-    @StateObject private var favourites = FavouriteContactsStore()
+    @StateObject private var favourites: FavouriteContactsStore
     private let settingsWindow: SettingsWindowController
     private let servicesProvider: AppServicesProvider
 
@@ -194,6 +194,8 @@ struct SYNQApp: App {
         let pairing = PairingCoordinator(deviceID: discovery.localDeviceID, deviceName: discovery.localDeviceName, settings: settings)
         pairing.observe(discovery)
         _pairing = StateObject(wrappedValue: pairing)
+        let favourites = FavouriteContactsStore()
+        _favourites = StateObject(wrappedValue: favourites)
         let servicesProvider = AppServicesProvider(
             onCall: { [weak pairing] number in pairing?.sendCallWhenConnected(number) },
             onShareFiles: { [weak pairing] urls in pairing?.confirmAndSendFiles(urls) }
@@ -207,11 +209,27 @@ struct SYNQApp: App {
         pairing.configureShareConfirmation(onOpenSettings: { settingsWindow.show() })
         phoneURLHandler.configure { [weak pairing] number in pairing?.sendCallWhenConnected(number) }
         phoneURLHandler.configureFiles { [weak pairing] urls in pairing?.confirmAndSendFiles(urls) }
-        pairing.onSyncedContactsReceived = { [weak favourites] contacts in
+        pairing.onSyncedContactsReceived = { [weak favourites] contacts, deviceFavourites in
+            NSLog("APP onSyncedContactsReceived count=%ld deviceFavs=%ld", contacts.count, deviceFavourites.count)
             favourites?.setSyncedContacts(contacts)
+            favourites?.setDeviceFavourites(deviceFavourites, isInitialSync: true)
+        }
+        pairing.onDeviceFavouritesReceived = { [weak favourites] deviceFavourites in
+            NSLog("APP onDeviceFavouritesReceived count=%ld", deviceFavourites.count)
+            favourites?.setDeviceFavourites(deviceFavourites, isInitialSync: false)
         }
         pairing.onContactsSyncError = { [weak favourites] message in
+            NSLog("APP onContactsSyncError: %@", message)
             favourites?.setSyncError(message)
+        }
+        pairing.onConnected = { [weak pairing, weak favourites] in
+            if let favs = favourites?.contacts, !favs.isEmpty {
+                pairing?.sendFavouritesUpdate(favs)
+            }
+            pairing?.requestContactsSync()
+        }
+        favourites.onFavouritesChanged = { [weak pairing] updatedContacts in
+            pairing?.sendFavouritesUpdate(updatedContacts)
         }
         NSApplication.shared.applicationIconImage = makeSynqDeviceIcon(size: 512)
     }
@@ -243,23 +261,91 @@ struct SYNQApp: App {
 }
 
 private struct SYNQPanel: View {
+    private enum Screen {
+        case home
+        case call
+        case guest
+        case fileDrop
+    }
+
     @ObservedObject var discovery: BonjourDiscovery
     @ObservedObject var pairing: PairingCoordinator
     @ObservedObject var settings: SYNQSettings
     @ObservedObject var favourites: FavouriteContactsStore
     let onOpenSettings: () -> Void
+    @State private var screen: Screen = .home
 
-    @State private var showCallPicker = false
 
     var body: some View {
         MenuBarPanelSurface {
-            panelContent
+            Group {
+                switch screen {
+                case .call:
+                    CallContactPickerView(
+                        favourites: favourites,
+                        onDial: { pairing.sendCall($0) },
+                        onManualDial: { pairing.sendCallFromClipboard() },
+                        onSyncContacts: { pairing.requestContactsSync() },
+                        onClose: { withAnimation(.easeInOut(duration: 0.18)) { screen = .home } }
+                    )
+                    .transition(.opacity)
+                case .guest:
+                    GuestTransferPopoverView(
+                        manager: pairing.guestTransferManager,
+                        onBack: { withAnimation(.easeInOut(duration: 0.18)) {
+                            screen = .home
+                            pairing.guestTransferPanelRequested = false
+                        } }
+                    )
+                    .transition(.opacity)
+                case .fileDrop:
+                    FileDropPopoverView(
+                        pairing: pairing,
+                        onBack: { withAnimation(.easeInOut(duration: 0.18)) {
+                            screen = .home
+                            pairing.fileDropPanelRequested = false
+                        } }
+                    )
+                    .transition(.opacity)
+                case .home:
+                    panelContent
+                        .transition(.opacity)
+                }
+            }
+            // Keep the feature screens at a consistent height, but let brief
+            // connection and error states use only the space they need.
+            .frame(height: panelHeight, alignment: .top)
+            .animation(.easeInOut(duration: 0.18), value: screen)
         }
         .onAppear { pairing.refreshNotificationAuthorization() }
+        .onAppear {
+            if pairing.guestTransferPanelRequested { screen = .guest }
+            if pairing.fileDropPanelRequested { screen = .fileDrop }
+        }
+        .onChange(of: pairing.guestTransferPanelRequested) { requested in
+            if requested { withAnimation(.easeInOut(duration: 0.18)) { screen = .guest } }
+        }
+        .onChange(of: pairing.fileDropPanelRequested) { requested in
+            if requested { withAnimation(.easeInOut(duration: 0.18)) { screen = .fileDrop } }
+        }
+    }
+
+    private var panelHeight: CGFloat {
+        guard case .home = screen else { return 450 }
+        switch pairing.state {
+        case .connecting: return 220
+        case .verification: return 300
+        case .failed: return 270
+        case .idle:
+            let visibleDeviceRows = min(discovery.peers.count, 3)
+            let transferRowHeight: CGFloat = pairing.fileTransfers.isEmpty ? 0 : 48
+            return min(450, 250 + CGFloat(visibleDeviceRows) * 56 + transferRowHeight)
+        default: return 450
+        }
     }
 
     private var panelContent: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 Image(nsImage: makeSynqDeviceIcon(size: 34))
                     .frame(width: 34, height: 34)
@@ -272,7 +358,60 @@ private struct SYNQPanel: View {
                     .fill(isConnected ? Color.green : Color.secondary.opacity(0.45))
                     .frame(width: 8, height: 8)
             }
+            .padding(.bottom, 12)
 
+            Group {
+                if settings.hasCompletedOnboarding, case .idle = pairing.state {
+                    // The device list scrolls independently; keep the privacy
+                    // notice visible above the fixed footer at every scroll position.
+                    VStack(alignment: .leading, spacing: 10) {
+                        nearbyDevices
+                        if !pairing.fileTransfers.isEmpty {
+                            Divider()
+                            FileTransfersSummaryButton(count: pairing.fileTransfers.count) {
+                                pairing.showFileTransferWindow()
+                            }
+                        }
+                    }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                } else {
+                    ScrollView(.vertical) {
+                        panelMainContent
+                    }
+                    .scrollIndicators(.hidden)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
+            }
+
+            Divider().padding(.top, 10)
+            HStack(spacing: 7) {
+                footerPill("Settings", icon: "gearshape", action: onOpenSettings)
+                    .help("Settings")
+                footerPill("Guest Share", icon: "person.crop.circle.badge.plus") {
+                    if !pairing.guestTransferManager.isSessionActive {
+                        pairing.guestTransferManager.startSession()
+                    }
+                    pairing.guestTransferPanelRequested = true
+                    withAnimation(.easeInOut(duration: 0.18)) { screen = .guest }
+                }
+                .help("Receive files from nearby guests via QR code")
+                footerPill("Quit", icon: "power", isDestructive: true) {
+                    NSApplication.shared.terminate(nil)
+                }
+                .help("Quit SYNQ")
+            }
+            .font(.caption)
+            .padding(.top, 10)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private var panelMainContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
             if !settings.hasCompletedOnboarding {
                 welcomeCard
             } else {
@@ -291,32 +430,8 @@ private struct SYNQPanel: View {
                     pairing.showFileTransferWindow()
                 }
             }
-
-            Divider()
-            HStack {
-                Button(action: onOpenSettings) {
-                    Label("Settings", systemImage: "gearshape")
-                }
-                .buttonStyle(.plain)
-                .help("Settings")
-
-                Spacer()
-
-                Button(action: { pairing.showGuestTransferWindow() }) {
-                    Label("Guest Transfer", systemImage: "person.crop.circle.badge.plus")
-                }
-                .buttonStyle(.plain)
-                .help("Receive files from nearby guests via QR code")
-
-                Spacer()
-
-                Button("Quit SYNQ") { NSApplication.shared.terminate(nil) }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-            }
-            .font(.caption)
         }
-        .padding(16)
+        .padding(.vertical, 2)
     }
 
     private var isConnected: Bool {
@@ -369,7 +484,7 @@ private struct SYNQPanel: View {
                     .help("Disconnect")
                 }
                 .padding(10)
-                .modifier(NativeLiquidGlassCardModifier(cornerRadius: 12))
+                .modifier(NativeCardMaterialFallbackModifier(cornerRadius: 12))
 
                 if let call = pairing.remoteCall {
                     VStack(alignment: .leading, spacing: 8) {
@@ -420,15 +535,12 @@ private struct SYNQPanel: View {
                             .help("Play a short alert on Android")
                     }
                     if pairing.isFeatureAvailable(.calls) {
-                        actionButton(
-                            "Call",
-                            icon: showCallPicker ? "phone.down.fill" : "phone.arrow.up.right"
-                        ) {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                showCallPicker.toggle()
-                            }
+                        actionButton("Call", icon: "phone.arrow.up.right") {
+                            favourites.startSync()
+                            pairing.requestContactsSync()
+                            withAnimation(.easeInOut(duration: 0.18)) { screen = .call }
                         }
-                        .help(showCallPicker ? "Close call picker" : "Call a contact on Android")
+                        .help("Open Call from Mac in this panel")
                     }
                     if pairing.isFeatureAvailable(.links) {
                         actionButton("Link", icon: "link") { pairing.quickActions.sendClipboardLink() }
@@ -436,27 +548,6 @@ private struct SYNQPanel: View {
                 }
                 QuickActionsPanel(actions: pairing.quickActions)
 
-                // ── Call contact picker ───────────────────────────────────
-                if showCallPicker && pairing.isFeatureAvailable(.calls) {
-                    CallContactPickerView(
-                        favourites: favourites,
-                        onDial: { number in
-                            pairing.sendCall(number)
-                            withAnimation(.easeInOut(duration: 0.2)) { showCallPicker = false }
-                        },
-                        onManualDial: {
-                            pairing.sendCallFromClipboard()
-                            withAnimation(.easeInOut(duration: 0.2)) { showCallPicker = false }
-                        },
-                        onSyncContacts: {
-                            pairing.requestContactsSync()
-                        },
-                        onClose: {
-                            withAnimation(.easeInOut(duration: 0.2)) { showCallPicker = false }
-                        }
-                    )
-                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
-                }
                 if pairing.isFeatureAvailable(.files) {
                     Button { pairing.showFileDropWindow() } label: {
                         Label(
@@ -466,7 +557,7 @@ private struct SYNQPanel: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 7)
                     }
-                    .buttonStyle(NativeLiquidGlassActionButtonStyle())
+                    .modifier(NativeLiquidGlassButtonModifier())
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityHint("Opens a window that stays visible while you drag a file from Finder")
@@ -529,7 +620,7 @@ private struct SYNQPanel: View {
     }
 
     private func actionButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        return Button(action: action) {
             VStack(spacing: 4) {
                 Image(systemName: icon)
                     .font(.system(size: 16, weight: .medium))
@@ -541,18 +632,42 @@ private struct SYNQPanel: View {
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity)
-            .frame(height: 52)
+            .frame(height: 48)
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
-        .buttonStyle(NativeLiquidGlassActionButtonStyle())
+        .modifier(NativeLiquidGlassButtonModifier())
         .accessibilityLabel(title)
         .accessibilityHint("Runs the \(title.lowercased()) action for the connected device")
+    }
+
+    private func footerPill(_ title: String, icon: String, isDestructive: Bool = false, action: @escaping () -> Void) -> some View {
+        return Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 7)
+                .foregroundStyle(isDestructive ? Color.red : Color.primary)
+                .background(
+                    (isDestructive ? Color.red : Color.primary).opacity(isDestructive ? 0.13 : 0.09),
+                    in: Capsule()
+                )
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
     private var nearbyDevices: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Text("Nearby devices").font(.subheadline.weight(.semibold))
+            HStack {
+                Text("Nearby devices").font(.subheadline.weight(.semibold))
+                Spacer()
+                Label("Same Wi‑Fi", systemImage: "wifi")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
             if discovery.peers.isEmpty {
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small)
@@ -564,29 +679,60 @@ private struct SYNQPanel: View {
                 }
                 .padding(.vertical, 8)
             } else {
-                ForEach(discovery.peers) { peer in
-                    Button {
-                        if let host = peer.host, let port = peer.port {
-                            pairing.pair(host: host, port: port, peerName: peer.deviceNameHint)
-                        }
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: "smartphone").frame(width: 24)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(peer.deviceNameHint).lineLimit(1)
-                                Text(peer.deviceIDHint.map(pairing.trustedDeviceIDs.contains) == true ? "Paired · click to reconnect" : "Click to pair")
-                                    .font(.caption).foregroundStyle(.secondary)
+                ScrollView(.vertical) {
+                    LazyVStack(spacing: 8) {
+                        ForEach(discovery.peers) { peer in
+                            Button {
+                                if let host = peer.host, let port = peer.port {
+                                    pairing.pair(host: host, port: port, peerName: peer.deviceNameHint)
+                                }
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "smartphone").frame(width: 24)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(peer.deviceNameHint).lineLimit(1)
+                                        Text(peer.deviceIDHint.map(pairing.trustedDeviceIDs.contains) == true ? "Paired · click to reconnect" : "Click to pair")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                             }
-                            Spacer()
-                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .frame(height: 54)
+                            .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                         }
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-                    .padding(.vertical, 4)
                 }
+                // Show only the rows that exist, up to three. More devices
+                // scroll here without moving the privacy notice or footer.
+                .frame(height: CGFloat(min(discovery.peers.count, 3)) * 54 + CGFloat(max(0, min(discovery.peers.count, 3) - 1)) * 8)
+                .scrollIndicators(.automatic)
             }
+
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: discovery.peers.isEmpty ? "dot.radiowaves.left.and.right" : "lock.shield")
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(discovery.peers.isEmpty ? "Searching your local network" : "Your connection stays private")
+                        .font(.caption.weight(.medium))
+                    Text(discovery.peers.isEmpty
+                         ? "Wake your phone and keep it on the same Wi‑Fi to connect."
+                         : "Paired devices reconnect securely when they’re available.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private func statusCard(title: String, detail: String, progress: Bool) -> some View {
@@ -598,7 +744,7 @@ private struct SYNQPanel: View {
             }
         }
         .padding(14).frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(NativeLiquidGlassCardModifier(cornerRadius: 12))
+        .modifier(NativeCardMaterialFallbackModifier(cornerRadius: 12))
     }
 
     private func verificationCard(name: String, code: String) -> some View {
@@ -609,7 +755,7 @@ private struct SYNQPanel: View {
             HStack { Button("Codes Match") { pairing.confirm() }.buttonStyle(.borderedProminent); Button("Cancel") { pairing.cancel() } }
         }
         .padding(14)
-        .modifier(NativeLiquidGlassCardModifier(cornerRadius: 12))
+        .modifier(NativeCardMaterialFallbackModifier(cornerRadius: 12))
     }
 
     private func failureCard(_ message: String) -> some View {
@@ -626,7 +772,7 @@ private struct SYNQPanel: View {
             }
         }
         .padding(14).frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(NativeLiquidGlassCardModifier(cornerRadius: 12))
+        .modifier(NativeCardMaterialFallbackModifier(cornerRadius: 12))
     }
 
     private func batterySymbol(_ level: Int) -> String {
@@ -948,7 +1094,7 @@ private struct SettingsView: View {
         }
 
         Section("Guest Transfers") {
-            Text("Allow someone without SYNQ installed to send files to your Mac over local Wi-Fi using a temporary QR code or synq.local.")
+            Text("Allow someone without SYNQ installed to send files to your Mac over local Wi-Fi using a temporary QR code or direct link.")
                 .font(.caption).foregroundStyle(.secondary)
             Button("Start Guest Transfer Session…") {
                 pairing.showGuestTransferWindow()

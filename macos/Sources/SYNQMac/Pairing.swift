@@ -183,8 +183,10 @@ final class PairingCoordinator: ObservableObject {
     let quickActions = QuickActions()
     let mediaController = MediaController()
     let shortcuts = ShortcutSettings()
-    var onSyncedContactsReceived: (([SyncedContact]) -> Void)?
+    var onSyncedContactsReceived: (([SyncedContact], [FavouriteContact]) -> Void)?
+    var onDeviceFavouritesReceived: (([FavouriteContact]) -> Void)?
     var onContactsSyncError: ((String) -> Void)?
+    var onConnected: (() -> Void)?
 
     var trustedDevices: [TrustedDeviceInfo] {
         trustRegistry.devices.map { device in
@@ -202,6 +204,8 @@ final class PairingCoordinator: ObservableObject {
     private var discoveryCancellable: AnyCancellable?
     private var settingsCancellable: AnyCancellable?
     private var reconnectWorkItem: DispatchWorkItem?
+    private var discoveredPeers: [DiscoveredPeer] = []
+    private var automaticReconnectSuppressed = false
     private var connectionTimeoutWorkItem: DispatchWorkItem?
     private var heartbeatWorkItem: DispatchWorkItem?
     private var lastTrustedEndpoint: (host: String, port: Int, name: String)?
@@ -236,7 +240,8 @@ final class PairingCoordinator: ObservableObject {
     private var fileDropWindow: FileDropWindowController?
     private var fileShareConfirmWindow: FileShareConfirmWindowController?
     public let guestTransferManager = GuestTransferManager()
-    private var guestTransferWindow: GuestTransferWindowController?
+    @Published var guestTransferPanelRequested = false
+    @Published var fileDropPanelRequested = false
     private var onOpenSettingsHandler: (() -> Void)?
     private lazy var callOverlayWindow = CallOverlayWindowController(pairing: self)
     private var hiddenCallOverlayIdentity: String?
@@ -397,11 +402,19 @@ final class PairingCoordinator: ObservableObject {
 
     func observe(_ discovery: BonjourDiscovery) {
         discoveryCancellable = discovery.$peers.sink { [weak self] peers in
-            self?.connectTrustedPeerIfNeeded(peers)
+            guard let self else { return }
+            self.discoveredPeers = peers
+            self.connectTrustedPeerIfNeeded(peers)
         }
     }
 
-    func pair(host: String, port: Int, peerName: String) {
+    func pair(host: String, port: Int, peerName: String, userInitiated: Bool = true) {
+        if userInitiated {
+            automaticReconnectSuppressed = false
+            reconnectAttempt = 0
+            reconnectWorkItem?.cancel()
+            reconnectWorkItem = nil
+        }
         diagnostics.record(category: "pairing", event: "connection_started")
         guard let endpointPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
             state = .failed("Invalid peer port")
@@ -464,6 +477,9 @@ final class PairingCoordinator: ObservableObject {
     }
 
     func cancel() {
+        automaticReconnectSuppressed = true
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
         connectionTimeoutWorkItem?.cancel()
         heartbeatWorkItem?.cancel()
         cancelFileTransfer()
@@ -487,6 +503,9 @@ final class PairingCoordinator: ObservableObject {
     }
 
     func dismiss() {
+        automaticReconnectSuppressed = true
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
         connectionTimeoutWorkItem?.cancel()
         heartbeatWorkItem?.cancel()
         cancelFileTransfer()
@@ -624,6 +643,27 @@ final class PairingCoordinator: ObservableObject {
             ciphertext: encrypted.ciphertext
         ))
         NSLog("PLUGIN contacts.request sent")
+    }
+
+    func sendFavouritesUpdate(_ list: [FavouriteContact]) {
+        guard let current = session, case .connected = state,
+              let key = current.pairingKey else { return }
+        let favouritesArray = list.prefix(30).map { contact -> [String: String] in
+            var entry: [String: String] = ["name": contact.name, "number": contact.number]
+            entry["id"] = contact.id
+            return entry
+        }
+        let payload: [String: Any] = ["version": 1, "favourites": favouritesArray]
+        guard let plaintext = try? JSONSerialization.data(withJSONObject: payload),
+              let encrypted = try? encrypt(plaintext, key: key) else { return }
+        current.send(PairingMessage(
+            kind: "favourites.update",
+            sessionId: current.id,
+            messageId: UUID().uuidString.lowercased(),
+            nonce: encrypted.nonce,
+            ciphertext: encrypted.ciphertext
+        ))
+        NSLog("PLUGIN favourites.update sent count=%d", list.prefix(30).count)
     }
 
     @discardableResult
@@ -1120,7 +1160,9 @@ final class PairingCoordinator: ObservableObject {
 
     func reconnectNow() {
         reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
         reconnectAttempt = 0
+        automaticReconnectSuppressed = false
         if let endpoint = lastTrustedEndpoint {
             pair(host: endpoint.host, port: endpoint.port, peerName: endpoint.name)
         }
@@ -1306,17 +1348,14 @@ final class PairingCoordinator: ObservableObject {
     }
 
     func showFileDropWindow() {
-        if fileDropWindow == nil {
-            fileDropWindow = FileDropWindowController(pairing: self)
-        }
-        fileDropWindow?.show()
+        fileDropPanelRequested = true
     }
 
     func showGuestTransferWindow() {
-        if guestTransferWindow == nil {
-            guestTransferWindow = GuestTransferWindowController(manager: guestTransferManager)
+        if !guestTransferManager.isSessionActive {
+            guestTransferManager.startSession()
         }
-        guestTransferWindow?.show()
+        guestTransferPanelRequested = true
     }
 
     private func beginFileTransferUI() {
@@ -1670,17 +1709,47 @@ final class PairingCoordinator: ObservableObject {
                 case "calls.confirmation_required": setTransientCallStatus("Confirm the call from the Android notification")
                 default: setTransientCallStatus("Android rejected the call request")
                 }
-            case "contacts.response":
+            case "favourites.update":
                 guard case .connected = state,
                       message.sessionId == current.id,
                       let messageID = message.messageId,
                       current.acceptMessageID(messageID),
+                      let key = current.pairingKey,
+                      let nonce = message.nonce,
+                      let ciphertext = message.ciphertext,
+                      let plaintext = try? decrypt(nonce: nonce, ciphertext: ciphertext, key: key),
+                      let json = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
+                      let favouritesArray = json["favourites"] as? [[String: Any]] else {
+                    return
+                }
+                let deviceFavourites = favouritesArray.prefix(30).compactMap { item -> FavouriteContact? in
+                    guard let name = item["name"] as? String,
+                          let number = item["number"] as? String else { return nil }
+                    let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let trimmedNumber = number.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmedName.isEmpty, !trimmedNumber.isEmpty else { return nil }
+                    return FavouriteContact(name: trimmedName, number: trimmedNumber, id: item["id"] as? String)
+                }
+                DispatchQueue.main.async { [weak self] in
+                    self?.onDeviceFavouritesReceived?(deviceFavourites)
+                }
+            case "contacts.response":
+                guard case .connected = state,
+                      message.sessionId == current.id,
                       let nonce = message.nonce,
                       let ciphertext = message.ciphertext,
                       let plaintext = try? decrypt(nonce: nonce, ciphertext: ciphertext, key: current.pairingKey!),
                       let json = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
                       let contactsArray = json["contacts"] as? [[String: Any]] else {
+                    NSLog("PLUGIN contacts.response validation failed: sessionMatch=%d, hasNonce=%d, hasCiphertext=%d",
+                          message.sessionId == current.id, message.nonce != nil, message.ciphertext != nil)
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onContactsSyncError?("Failed to read contacts from Android")
+                    }
                     return
+                }
+                if let messageID = message.messageId {
+                    _ = current.acceptMessageID(messageID)
                 }
                 var map: [String: [String]] = [:]
                 var order: [String] = []
@@ -1703,8 +1772,17 @@ final class PairingCoordinator: ObservableObject {
                 for name in order {
                     result.append(SyncedContact(name: name, numbers: map[name] ?? []))
                 }
+                let deviceFavourites = (json["favourites"] as? [[String: Any]] ?? []).compactMap { item -> FavouriteContact? in
+                    guard let name = item["name"] as? String,
+                          let number = item["number"] as? String else { return nil }
+                    let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let trimmedNumber = number.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmedName.isEmpty, !trimmedNumber.isEmpty else { return nil }
+                    return FavouriteContact(name: trimmedName, number: trimmedNumber, id: item["id"] as? String)
+                }
+                NSLog("PLUGIN contacts.response accepted: %ld contacts, %ld device favourites", result.count, deviceFavourites.count)
                 DispatchQueue.main.async { [weak self] in
-                    self?.onSyncedContactsReceived?(result)
+                    self?.onSyncedContactsReceived?(result, deviceFavourites)
                 }
             case "contacts.disabled":
                 DispatchQueue.main.async { [weak self] in
@@ -1713,6 +1791,10 @@ final class PairingCoordinator: ObservableObject {
             case "contacts.permission_needed":
                 DispatchQueue.main.async { [weak self] in
                     self?.onContactsSyncError?("Please allow Contacts permission in SYNQ on your Android phone")
+                }
+            case "contacts.unavailable":
+                DispatchQueue.main.async { [weak self] in
+                    self?.onContactsSyncError?("Android couldn't read contacts. Check Contacts permission and try syncing again.")
                 }
             case "files.offer":
                 guard featureEnabled(.files, current: current) else {
@@ -1928,6 +2010,7 @@ final class PairingCoordinator: ObservableObject {
             publishLocalBattery(force: true)
             scheduleHeartbeat(for: current)
             requestContactsSync()
+            onConnected?()
             NSLog("PAIRING verified peer=%@", current.peerName)
         }
     }
@@ -2043,6 +2126,7 @@ final class PairingCoordinator: ObservableObject {
     }
 
     func connectTrustedPeerIfNeeded(_ peers: [DiscoveredPeer]) {
+        guard !automaticReconnectSuppressed, reconnectWorkItem == nil else { return }
         switch state {
         case .idle, .failed:
             break
@@ -2053,17 +2137,22 @@ final class PairingCoordinator: ObservableObject {
             guard let id = $0.deviceIDHint else { return false }
             return trustedDeviceIDs.contains(id) && deviceID < id
         }), let host = peer.host, let port = peer.port else { return }
-        pair(host: host, port: port, peerName: peer.deviceNameHint)
+        pair(host: host, port: port, peerName: peer.deviceNameHint, userInitiated: false)
     }
 
     private func scheduleReconnect() {
-        guard let endpoint = lastTrustedEndpoint else { return }
-        reconnectWorkItem?.cancel()
+        guard !automaticReconnectSuppressed,
+              !trustedDeviceIDs.isEmpty,
+              lastTrustedEndpoint != nil,
+              reconnectWorkItem == nil else { return }
         let delay = reconnectDelay(attempt: reconnectAttempt)
         reconnectAttempt += 1
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.state == .idle else { return }
-            self.pair(host: endpoint.host, port: endpoint.port, peerName: endpoint.name)
+            guard let self else { return }
+            self.reconnectWorkItem = nil
+            guard !self.automaticReconnectSuppressed, self.state == .idle else { return }
+            self.connectTrustedPeerIfNeeded(self.discoveredPeers)
+            if self.state == .idle { self.scheduleReconnect() }
         }
         reconnectWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)

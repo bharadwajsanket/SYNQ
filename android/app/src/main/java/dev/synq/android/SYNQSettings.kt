@@ -5,6 +5,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+const val MAX_FAVOURITE_CONTACTS = 30
+
+private fun contactNumberKey(number: String): String = number.filter(Char::isDigit)
+
 enum class SYNQFeature(val key: String, val title: String) {
     CLIPBOARD("clipboard", "Clipboard"),
     FILES("files", "File transfer"),
@@ -37,6 +41,8 @@ data class SYNQSettingsState(
     val otpAssistanceEnabled: Boolean = false,
     val contactsSyncEnabled: Boolean = false,
     val favouriteContacts: List<ContactItem> = emptyList(),
+    val lastContactsSyncAtMillis: Long? = null,
+    val lastContactsSyncCount: Int? = null,
 )
 
 internal fun effectiveFeatureEnabled(
@@ -156,31 +162,64 @@ class SYNQSettings(context: Context, defaultDeviceName: String) {
         mutableState.value = mutableState.value.copy(contactsSyncEnabled = enabled)
     }
 
-    fun addFavouriteContact(name: String, number: String) {
-        val trimmedName = name.trim()
-        val trimmedNumber = number.trim()
-        if (trimmedName.isBlank() || trimmedNumber.isBlank() || mutableState.value.favouriteContacts.size >= 30) return
-        val item = ContactItem(name = trimmedName, number = trimmedNumber)
-        val updated = mutableState.value.favouriteContacts.filterNot { it.number == trimmedNumber } + item
-        saveFavouriteContacts(updated)
+    fun recordContactsSync(count: Int) {
+        val timestamp = System.currentTimeMillis()
+        val safeCount = count.coerceAtLeast(0)
+        preferences.edit()
+            .putLong(KEY_LAST_CONTACTS_SYNC_AT, timestamp)
+            .putInt(KEY_LAST_CONTACTS_SYNC_COUNT, safeCount)
+            .apply()
+        mutableState.value = mutableState.value.copy(
+            lastContactsSyncAtMillis = timestamp,
+            lastContactsSyncCount = safeCount,
+        )
     }
 
+    @Synchronized
+    fun addFavouriteContact(name: String, number: String): Boolean {
+        val trimmedName = name.trim()
+        val trimmedNumber = number.trim()
+        if (trimmedName.isBlank() || trimmedNumber.isBlank()) return false
+        val current = mutableState.value.favouriteContacts
+        val numberKey = contactNumberKey(trimmedNumber)
+        if (numberKey.isBlank()) return false
+        val existingIndex = current.indexOfFirst { contactNumberKey(it.number) == numberKey }
+        val updated = if (existingIndex >= 0) {
+            current.toMutableList().also { it[existingIndex] = it[existingIndex].copy(name = trimmedName, number = trimmedNumber) }
+        } else {
+            if (current.size >= MAX_FAVOURITE_CONTACTS) return false
+            current + ContactItem(name = trimmedName, number = trimmedNumber)
+        }
+        saveFavouriteContacts(updated)
+        return true
+    }
+
+    @Synchronized
     fun removeFavouriteContact(id: String) {
         val updated = mutableState.value.favouriteContacts.filterNot { it.id == id }
         saveFavouriteContacts(updated)
     }
 
+    @Synchronized
     fun setFavouriteContacts(list: List<ContactItem>) {
         saveFavouriteContacts(list)
     }
 
+    @Synchronized
     private fun saveFavouriteContacts(list: List<ContactItem>) {
+        val seenNumbers = mutableSetOf<String>()
+        val safeList = list.asSequence()
+            .map { it.copy(name = it.name.trim(), number = it.number.trim()) }
+            .filter { it.name.isNotBlank() && it.number.isNotBlank() && contactNumberKey(it.number).isNotBlank() }
+            .filter { seenNumbers.add(contactNumberKey(it.number)) }
+            .take(MAX_FAVOURITE_CONTACTS)
+            .toList()
         val array = org.json.JSONArray()
-        list.forEach {
+        safeList.forEach {
             array.put(org.json.JSONObject().put("id", it.id).put("name", it.name).put("number", it.number))
         }
         preferences.edit().putString(KEY_FAVOURITE_CONTACTS, array.toString()).apply()
-        mutableState.value = mutableState.value.copy(favouriteContacts = list)
+        mutableState.value = mutableState.value.copy(favouriteContacts = safeList)
     }
 
     private fun load(defaultDeviceName: String): SYNQSettingsState {
@@ -219,6 +258,7 @@ class SYNQSettings(context: Context, defaultDeviceName: String) {
             }
         }
 
+        val safeFavourites = sanitizeFavouriteContacts(favouriteContacts)
         return SYNQSettingsState(
             deviceName = preferences.getString(KEY_DEVICE_NAME, null) ?: defaultDeviceName,
             globalFeatures = globals,
@@ -229,8 +269,20 @@ class SYNQSettings(context: Context, defaultDeviceName: String) {
             themeMode = preferences.getString(KEY_THEME_MODE, "system") ?: "system",
             otpAssistanceEnabled = preferences.getBoolean(KEY_OTP_ASSISTANCE_ENABLED, false),
             contactsSyncEnabled = preferences.getBoolean(KEY_CONTACTS_SYNC_ENABLED, false),
-            favouriteContacts = favouriteContacts,
+            favouriteContacts = safeFavourites,
+            lastContactsSyncAtMillis = preferences.getLong(KEY_LAST_CONTACTS_SYNC_AT, 0L).takeIf { it > 0L },
+            lastContactsSyncCount = preferences.getInt(KEY_LAST_CONTACTS_SYNC_COUNT, -1).takeIf { it >= 0 },
         )
+    }
+
+    private fun sanitizeFavouriteContacts(list: List<ContactItem>): List<ContactItem> {
+        val seenNumbers = mutableSetOf<String>()
+        return list.asSequence()
+            .map { it.copy(name = it.name.trim(), number = it.number.trim()) }
+            .filter { it.name.isNotBlank() && it.number.isNotBlank() && contactNumberKey(it.number).isNotBlank() }
+            .filter { seenNumbers.add(contactNumberKey(it.number)) }
+            .take(MAX_FAVOURITE_CONTACTS)
+            .toList()
     }
 
     companion object {
@@ -242,5 +294,7 @@ class SYNQSettings(context: Context, defaultDeviceName: String) {
         private const val KEY_OTP_ASSISTANCE_ENABLED = "otp_assistance_enabled"
         private const val KEY_CONTACTS_SYNC_ENABLED = "contacts_sync_enabled"
         private const val KEY_FAVOURITE_CONTACTS = "favourite_contacts"
+        private const val KEY_LAST_CONTACTS_SYNC_AT = "contacts_sync_at"
+        private const val KEY_LAST_CONTACTS_SYNC_COUNT = "contacts_sync_count"
     }
 }

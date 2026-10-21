@@ -127,20 +127,9 @@ final class GuestTransferTests: XCTestCase {
         manager.startSession(duration: 120)
 
         XCTAssertTrue(manager.isSessionActive)
-        XCTAssertEqual(manager.hostPreference, .friendly)
-        XCTAssertTrue(manager.sessionURLString?.contains("synq.local") == true)
-        XCTAssertNotNil(manager.qrCodeImage)
-
-        // Switch to direct IP fallback
-        manager.hostPreference = .ip
-        XCTAssertEqual(manager.hostPreference, .ip)
         XCTAssertTrue(manager.sessionURLString?.contains(manager.localIP) == true)
-        XCTAssertFalse(manager.sessionURLString?.contains("synq.local") == true)
         XCTAssertNotNil(manager.qrCodeImage)
-
-        // Switch back to friendly
-        manager.hostPreference = .friendly
-        XCTAssertTrue(manager.sessionURLString?.contains("synq.local") == true)
+        XCTAssertFalse(manager.sessionURLString?.contains(".local") == true)
 
         manager.cancelSession()
     }

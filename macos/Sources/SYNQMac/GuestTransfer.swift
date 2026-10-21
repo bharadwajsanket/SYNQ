@@ -159,6 +159,7 @@ final class GuestHTTPServer: @unchecked Sendable {
     private let expiresAt: Date
     private let stagingDirectory: URL
     private let onUploadReceived: @Sendable (GuestPendingUpload) -> Void
+    private let onFailure: @Sendable (String) -> Void
     private let queue = DispatchQueue(label: "dev.synq.guest.server", qos: .userInitiated)
 
     private var isExpired: Bool {
@@ -170,12 +171,14 @@ final class GuestHTTPServer: @unchecked Sendable {
         token: String,
         expiresAt: Date,
         stagingDirectory: URL,
+        onFailure: @escaping @Sendable (String) -> Void = { _ in },
         onUploadReceived: @escaping @Sendable (GuestPendingUpload) -> Void
     ) {
         self.port = port
         self.token = token
         self.expiresAt = expiresAt
         self.stagingDirectory = stagingDirectory
+        self.onFailure = onFailure
         self.onUploadReceived = onUploadReceived
     }
 
@@ -185,9 +188,10 @@ final class GuestHTTPServer: @unchecked Sendable {
         listener.newConnectionHandler = { [weak self] connection in
             self?.handleConnection(connection)
         }
-        listener.stateUpdateHandler = { state in
+        listener.stateUpdateHandler = { [onFailure] state in
             if case let .failed(error) = state {
                 NSLog("GuestHTTPServer listener error: %@", String(describing: error))
+                onFailure(error.localizedDescription)
             }
         }
         listener.start(queue: queue)
@@ -784,13 +788,6 @@ final class GuestHTTPServer: @unchecked Sendable {
 /// Coordinates the Guest Transfer lifecycle, UI state, and file acceptance.
 @MainActor
 public final class GuestTransferManager: ObservableObject {
-    public enum HostPreference: String, CaseIterable, Identifiable, Sendable {
-        case friendly = "synq.local"
-        case ip = "IP Address"
-
-        public var id: String { rawValue }
-    }
-
     @Published public private(set) var isSessionActive: Bool = false
     @Published public private(set) var sessionToken: String?
     @Published public private(set) var sessionURLString: String?
@@ -798,11 +795,6 @@ public final class GuestTransferManager: ObservableObject {
     @Published public private(set) var timeRemaining: TimeInterval = 0
     @Published public private(set) var pendingUploads: [GuestPendingUpload] = []
     @Published public private(set) var localIP: String = "127.0.0.1"
-    @Published public var hostPreference: HostPreference = .friendly {
-        didSet {
-            updateSessionURL()
-        }
-    }
     @Published public var errorMessage: String?
 
     private var server: GuestHTTPServer?
@@ -822,6 +814,10 @@ public final class GuestTransferManager: ObservableObject {
 
         self.currentPort = port
         self.localIP = GuestTransferSecurity.getLocalIPAddress()
+        guard !localIP.hasPrefix("127.") else {
+            self.errorMessage = "Connect your Mac to Wi‑Fi or Ethernet before starting Guest Share."
+            return
+        }
         let token = GuestTransferSecurity.generateSecureToken()
 
         let sessionStagingDir = stagingDirectory.appendingPathComponent(token, isDirectory: true)
@@ -833,6 +829,13 @@ public final class GuestTransferManager: ObservableObject {
             token: token,
             expiresAt: expirationDate,
             stagingDirectory: sessionStagingDir,
+            onFailure: { [weak self] message in
+                DispatchQueue.main.async {
+                    guard let self, self.sessionToken == token else { return }
+                    self.cancelSession()
+                    self.errorMessage = "Guest sharing couldn’t start: \(message)"
+                }
+            },
             onUploadReceived: { [weak self] upload in
                 DispatchQueue.main.async {
                     self?.pendingUploads.insert(upload, at: 0)
@@ -874,8 +877,7 @@ public final class GuestTransferManager: ObservableObject {
 
     private func updateSessionURL() {
         guard let token = sessionToken else { return }
-        let host = (hostPreference == .friendly) ? "synq.local" : localIP
-        let urlString = "http://\(host):\(currentPort)/guest?token=\(token)"
+        let urlString = "http://\(localIP):\(currentPort)/guest?token=\(token)"
         self.sessionURLString = urlString
         self.qrCodeImage = GuestTransferSecurity.generateQRCode(from: urlString)
     }
