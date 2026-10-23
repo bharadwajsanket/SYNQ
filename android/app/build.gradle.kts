@@ -16,8 +16,8 @@ android {
         applicationId = "bharadwaj.synq.bridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 26
-        versionName = "1.5.4"
+        versionCode = 27
+        versionName = "2.5.4"
     }
 
     signingConfigs {

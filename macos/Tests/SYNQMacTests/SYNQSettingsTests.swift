@@ -25,4 +25,42 @@ final class SYNQSettingsTests: XCTestCase {
         XCTAssertFalse(featureEnabledByLegacyPeer(.ping))
         XCTAssertTrue(featureEnabledByLegacyPeer(.battery))
     }
+
+    @MainActor
+    func testQuietModeDefaultsToDisabled() {
+        let settings = SYNQSettings()
+        let original = settings.quietModeEnabled
+        let originalTimestamp = settings.quietModeUpdatedAt
+        defer {
+            settings.setQuietModeEnabled(original, updatedAt: originalTimestamp)
+        }
+
+        settings.setQuietModeEnabled(false, updatedAt: 0)
+        XCTAssertFalse(settings.quietModeEnabled)
+        XCTAssertEqual(settings.quietModeUpdatedAt, 0)
+    }
+
+    @MainActor
+    func testQuietModeToggleUpdatesTimestamp() {
+        let settings = SYNQSettings()
+        let original = settings.quietModeEnabled
+        let originalTimestamp = settings.quietModeUpdatedAt
+        defer {
+            settings.setQuietModeEnabled(original, updatedAt: originalTimestamp)
+        }
+
+        let testTimestamp: Int64 = 1700000000000
+        settings.setQuietModeEnabled(true, updatedAt: testTimestamp)
+        XCTAssertTrue(settings.quietModeEnabled)
+        XCTAssertEqual(settings.quietModeUpdatedAt, testTimestamp)
+    }
+
+    func testGranularFeaturePermissionsCoverAllCases() {
+        XCTAssertEqual(SYNQFeature.allCases.count, 9)
+        let features: Set<SYNQFeature> = [
+            .clipboard, .files, .notifications, .battery,
+            .findDevice, .ping, .links, .media, .calls
+        ]
+        XCTAssertEqual(Set(SYNQFeature.allCases), features)
+    }
 }

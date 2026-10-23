@@ -27,3 +27,7 @@ func remoteCallDetail(_ detail: String, type: String?) -> String {
 func shouldUseSystemNotification(callType: String?) -> Bool {
     callType == nil
 }
+
+func shouldSuppressNotificationInQuietMode(quietModeEnabled: Bool, callType: String?) -> Bool {
+    quietModeEnabled && callType == nil
+}

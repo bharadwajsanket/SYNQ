@@ -82,14 +82,14 @@ private struct CallOverlayView: View {
                     } else {
                         HStack(spacing: 10) {
                             ForEach(orderedCallActions(call.actions).prefix(2)) { action in
-                                let isPending = inFlightActionToken == action.id
+                                let isPending = (pairing.inFlightCallActionToken ?? inFlightActionToken) == action.id
                                 Button(isPending ? actionPendingTitle(action.title) : action.title) {
                                     inFlightActionToken = action.id
                                     pairing.performRemoteCallAction(action)
                                 }
                                 .buttonStyle(CallActionButtonStyle(color: callActionColor(action.title)))
-                                .disabled(inFlightActionToken != nil)
-                                .opacity(inFlightActionToken != nil && !isPending ? 0.5 : 1.0)
+                                .disabled(pairing.inFlightCallActionToken != nil || inFlightActionToken != nil)
+                                .opacity((pairing.inFlightCallActionToken != nil || inFlightActionToken != nil) && !isPending ? 0.5 : 1.0)
                                 .frame(maxWidth: .infinity)
                             }
                         }
@@ -132,6 +132,13 @@ private struct CallActionButtonStyle: ButtonStyle {
             )
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
+}
+
+func isCallEndingActionTitle(_ title: String) -> Bool {
+    title.localizedCaseInsensitiveContains("decline") ||
+    title.localizedCaseInsensitiveContains("hang") ||
+    title.localizedCaseInsensitiveContains("reject") ||
+    title.localizedCaseInsensitiveContains("end")
 }
 
 func orderedCallActions(_ actions: [RemoteCallAction]) -> [RemoteCallAction] {

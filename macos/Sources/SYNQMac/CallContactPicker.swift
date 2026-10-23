@@ -13,6 +13,7 @@ struct CallContactPickerView: View {
     let onDial: (String) -> Void
     let onManualDial: () -> Void
     var onSyncContacts: (() -> Void)? = nil
+    var onSendSMS: ((String, String, @escaping (Result<Void, SmsError>) -> Void) -> Void)? = nil
     let onClose: () -> Void
 
     @State private var selectedTab: CallPickerTab = .favourites
@@ -20,6 +21,7 @@ struct CallContactPickerView: View {
     @State private var searchQuery: String = ""
     @State private var showAddSheet = false
     @State private var pendingCall: PendingContactCall?
+    @State private var smsTarget: SMSTarget?
 
     private struct PendingContactCall: Identifiable {
         let id = UUID()
@@ -28,55 +30,158 @@ struct CallContactPickerView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Button(action: onClose) { Label("Back", systemImage: "chevron.left") }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                .accessibilityLabel("Back to SYNQ")
-                Spacer()
-                VStack(spacing: 2) {
-                    Text("Call from Mac").font(.headline)
-                    Text("Calls are placed from your phone")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Image(systemName: "phone.arrow.up.right")
-                    .font(.system(size: 13, weight: .semibold))
+        ZStack {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Button(action: onClose) {
+                        Label("Back", systemImage: "chevron.left")
+                            .font(.system(size: 12, weight: .medium))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(Color.primary.opacity(0.08), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
                     .foregroundStyle(Color.accentColor)
-                    .frame(width: 30, height: 30)
-                    .background(Color.accentColor.opacity(0.10), in: Circle())
-            }
+                    .accessibilityLabel("Back to SYNQ")
 
-            // Tab selector (Favourites / All Contacts)
-            Picker("", selection: $selectedTab) {
-                Text("Favourites (\(favourites.allFavourites.count))")
-                    .tag(CallPickerTab.favourites)
-                Text("All Contacts (\(favourites.syncedContacts.count))")
-                    .tag(CallPickerTab.allContacts)
-            }
-            .pickerStyle(.segmented)
-            .tint(Color.accentColor)
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 10) {
-                switch selectedTab {
-                case .favourites:
-                    favouritesSection
-                case .allContacts:
-                    allContactsSection
+                    Spacer()
+                    VStack(spacing: 2) {
+                        Text("Call from Mac").font(.headline)
+                        Text("Calls are placed from your phone")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "phone.arrow.up.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 30, height: 30)
+                        .background(Color.accentColor.opacity(0.10), in: Circle())
                 }
+
+                // Tab selector (Favourites / All Contacts)
+                Picker("", selection: $selectedTab) {
+                    Text("Favourites (\(favourites.allFavourites.count))")
+                        .tag(CallPickerTab.favourites)
+                    Text("All Contacts (\(favourites.syncedContacts.count))")
+                        .tag(CallPickerTab.allContacts)
+                }
+                .pickerStyle(.segmented)
+                .tint(Color.accentColor)
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 10) {
+                    switch selectedTab {
+                    case .favourites:
+                        favouritesSection
+                    case .allContacts:
+                        allContactsSection
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+                Divider()
+
+                manualDialBar
             }
+            .padding(16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-            Divider()
+            // In-panel call confirmation overlay: dismissing only cancels the dialog and keeps the SYNQ popover open.
+            if let target = pendingCall {
+                Color.black.opacity(0.4)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            pendingCall = nil
+                        }
+                    }
 
-            manualDialBar
+                VStack(spacing: 12) {
+                    Image(systemName: "phone.arrow.up.right")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 40, height: 40)
+                        .background(Color.accentColor.opacity(0.12), in: Circle())
+
+                    Text("Call \(target.name)?")
+                        .font(.headline)
+                        .multilineTextAlignment(.center)
+
+                    Text("Place a call to \(target.number) using your phone?")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 8)
+
+                    HStack(spacing: 10) {
+                        Button("Cancel") {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                pendingCall = nil
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+                        .keyboardShortcut(.cancelAction)
+
+                        Button {
+                            let num = target.number
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                pendingCall = nil
+                            }
+                            onDial(num)
+                        } label: {
+                            Label("Call", systemImage: "phone.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                        .keyboardShortcut(.defaultAction)
+                    }
+                    .padding(.top, 4)
+                }
+                .padding(18)
+                .frame(maxWidth: 260)
+                .background(
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(.ultraThickMaterial)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14)
+                                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                        )
+                        .shadow(color: Color.black.opacity(0.25), radius: 12, y: 5)
+                )
+                .transition(.scale(scale: 0.95).combined(with: .opacity))
+            }
+
+            // In-panel SMS composer overlay: keeps the popover open on Cancel, backdrop tap, or Send.
+            if let target = smsTarget, let onSendSMS = onSendSMS {
+                Color.black.opacity(0.4)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            smsTarget = nil
+                        }
+                    }
+
+                SMSComposerSheet(target: target, onSend: onSendSMS, onDismiss: {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        smsTarget = nil
+                    }
+                })
+                .frame(maxWidth: 308)
+                .background(
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(.ultraThickMaterial)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14)
+                                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                        )
+                        .shadow(color: Color.black.opacity(0.25), radius: 12, y: 5)
+                )
+                .transition(.scale(scale: 0.95).combined(with: .opacity))
+            }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear {
             if favourites.allFavourites.isEmpty && !favourites.syncedContacts.isEmpty {
                 selectedTab = .allContacts
@@ -86,14 +191,6 @@ struct CallContactPickerView: View {
             if favourites.allFavourites.isEmpty && count > 0 {
                 selectedTab = .allContacts
             }
-        }
-        .alert(item: $pendingCall) { target in
-            Alert(
-                title: Text("Call \(target.name)?"),
-                message: Text("Place a call to \(target.number) using your phone?"),
-                primaryButton: .default(Text("Call")) { onDial(target.number) },
-                secondaryButton: .cancel()
-            )
         }
     }
 
@@ -196,9 +293,11 @@ struct CallContactPickerView: View {
                 }
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
                         ForEach(favourites.allFavourites) { contact in
-                            FavouriteContactTile(contact: contact) {
+                            FavouriteContactTile(contact: contact, onTap: {
                                 requestCall(name: contact.name, number: contact.number)
-                            }
+                            }, onSMS: {
+                                smsTarget = SMSTarget(name: contact.name, number: contact.number)
+                            })
                         }
                 }
             }
@@ -298,6 +397,7 @@ struct CallContactPickerView: View {
                                 contact: contact,
                                 isFavourite: { num in favourites.isFavourite(number: num) },
                                 onDialNumber: { num in requestCall(name: contact.name, number: num) },
+                                onSMSNumber: { num, name in smsTarget = SMSTarget(name: name, number: num) },
                                 onToggleFavourite: { name, num in favourites.toggleFavourite(name: name, number: num) }
                             )
                         }
@@ -352,6 +452,7 @@ struct SyncedContactRowView: View {
     let contact: SyncedContact
     let isFavourite: (String) -> Bool
     let onDialNumber: (String) -> Void
+    var onSMSNumber: ((String, String) -> Void)? = nil
     let onToggleFavourite: (String, String) -> Void
 
     @State private var isExpanded = false
@@ -360,58 +461,72 @@ struct SyncedContactRowView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                // Avatar Circle
-                ZStack {
-                    Circle()
-                        .fill(avatarColor(for: contact.name))
-                        .frame(width: 26, height: 26)
-                    Text(contact.initial)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white)
-                }
-
-                // Name + primary number or count
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(contact.name)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
+                // Tapping contact info dials (if 1 number) or expands (if multiple)
+                Button {
                     if contact.numbers.count == 1, let single = contact.numbers.first {
-                        Text(single)
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
+                        onDialNumber(single)
                     } else if contact.numbers.count > 1 {
-                        Text("\(contact.numbers.count) phone numbers")
-                            .font(.system(size: 9))
-                            .foregroundStyle(Color.accentColor)
+                        withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        // Avatar Circle
+                        ZStack {
+                            Circle()
+                                .fill(avatarColor(for: contact.name))
+                                .frame(width: 26, height: 26)
+                            Text(contact.initial)
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(.white)
+                        }
+
+                        // Name + primary number or count
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(contact.name)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            if contact.numbers.count == 1, let single = contact.numbers.first {
+                                Text(single)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                            } else if contact.numbers.count > 1 {
+                                Text("\(contact.numbers.count) phone numbers")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                        }
+
+                        Spacer()
                     }
                 }
-
-                Spacer()
+                .buttonStyle(.plain)
 
                 if contact.numbers.count == 1, let single = contact.numbers.first {
-                    // Single number actions
+                    // Single number actions: Favourite and SMS (tapping SMS NEVER triggers a call)
                     Button {
                         onToggleFavourite(contact.name, single)
                     } label: {
-                            Image(systemName: isFavourite(single) ? "star.fill" : "star")
+                        Image(systemName: isFavourite(single) ? "star.fill" : "star")
                             .font(.system(size: 12))
                             .foregroundStyle(isFavourite(single) ? Color.yellow : Color.secondary.opacity(0.6))
                     }
                     .buttonStyle(.plain)
                     .help(isFavourite(single) ? "Remove from favourites" : "Add to favourites")
 
-                    Button {
-                        onDialNumber(single)
-                    } label: {
-                        Image(systemName: "phone.fill")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.accentColor)
-                            .padding(5)
-                            .background(Color.accentColor.opacity(0.12), in: Circle())
+                    if let onSMSNumber = onSMSNumber {
+                        Button {
+                            onSMSNumber(single, contact.name)
+                        } label: {
+                            Image(systemName: "message.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.accentColor)
+                                .padding(4)
+                                .background(Color.accentColor.opacity(0.12), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Send SMS to \(contact.name)")
                     }
-                    .buttonStyle(.plain)
-                    .help("Dial on Android")
                 } else if contact.numbers.count > 1 {
                     // Expand/collapse button for multi-number contacts
                     Button {
@@ -432,27 +547,28 @@ struct SyncedContactRowView: View {
                     .fill(isHovered ? Color.primary.opacity(0.06) : Color.clear)
             )
             .onHover { isHovered = $0 }
-            .contentShape(Rectangle())
-            .onTapGesture {
-                if contact.numbers.count == 1, let single = contact.numbers.first {
-                    onDialNumber(single)
-                } else if contact.numbers.count > 1 {
-                    withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
-                }
-            }
 
             // Expanded multi-number sub-list
             if isExpanded && contact.numbers.count > 1 {
                 VStack(spacing: 2) {
                     ForEach(contact.numbers, id: \.self) { num in
                         HStack(spacing: 8) {
-                            Image(systemName: "phone")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.secondary)
-                            Text(num)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.primary)
-                            Spacer()
+                            Button {
+                                onDialNumber(num)
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "phone")
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(.secondary)
+                                    Text(num)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.primary)
+                                    Spacer()
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .help("Dial \(num)")
+
                             Button {
                                 onToggleFavourite(contact.name, num)
                             } label: {
@@ -463,17 +579,19 @@ struct SyncedContactRowView: View {
                             .buttonStyle(.plain)
                             .help(isFavourite(num) ? "Remove from favourites" : "Add to favourites")
 
-                            Button {
-                                onDialNumber(num)
-                            } label: {
-                                Image(systemName: "phone.fill")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(Color.accentColor)
-                                    .padding(4)
-                                    .background(Color.accentColor.opacity(0.12), in: Circle())
+                            if let onSMSNumber = onSMSNumber {
+                                Button {
+                                    onSMSNumber(num, contact.name)
+                                } label: {
+                                    Image(systemName: "message.fill")
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(Color.accentColor)
+                                        .padding(3)
+                                        .background(Color.accentColor.opacity(0.12), in: Circle())
+                                }
+                                .buttonStyle(.plain)
+                                .help("Send SMS to \(num)")
                             }
-                            .buttonStyle(.plain)
-                            .help("Dial \(num)")
                         }
                         .padding(.leading, 34)
                         .padding(.trailing, 8)
@@ -499,45 +617,57 @@ struct SyncedContactRowView: View {
 private struct FavouriteContactTile: View {
     let contact: FavouriteContact
     let onTap: () -> Void
+    var onSMS: (() -> Void)? = nil
 
     var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 10) {
-                ZStack {
-                    Circle()
-                        .fill(LinearGradient(
-                            colors: [Color.accentColor.opacity(0.85), Color.accentColor.opacity(0.55)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ))
-                        .frame(width: 40, height: 40)
-                    Text(contact.initial)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.white)
+        HStack(spacing: 6) {
+            Button(action: onTap) {
+                HStack(spacing: 8) {
+                    ZStack {
+                        Circle()
+                            .fill(LinearGradient(
+                                colors: [Color.accentColor.opacity(0.85), Color.accentColor.opacity(0.55)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ))
+                            .frame(width: 36, height: 36)
+                        Text(contact.initial)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(contact.name)
+                            .font(.system(size: 12, weight: .semibold))
+                            .lineLimit(1)
+                        Text(contact.number)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
                 }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(contact.name)
-                        .font(.system(size: 12, weight: .semibold))
-                        .lineLimit(1)
-                    Text(contact.number)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "phone.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
             }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
-            .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
-            .contentShape(RoundedRectangle(cornerRadius: 12))
+            .buttonStyle(.plain)
+            .accessibilityLabel("Call \(contact.name), \(contact.number)")
+            .help("Call \(contact.name)")
+
+            if let onSMS = onSMS {
+                Button(action: onSMS) {
+                    Image(systemName: "message.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .padding(5)
+                        .background(Color.accentColor.opacity(0.12), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Send SMS to \(contact.name)")
+                .accessibilityLabel("SMS \(contact.name)")
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Call \(contact.name), \(contact.number)")
-        .help("Call \(contact.name)")
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -884,3 +1014,192 @@ struct ManageFavouriteContactsView: View {
         }
     }
 }
+
+// MARK: - SMS Composer Sheet
+
+struct SMSTarget: Identifiable {
+    let id = UUID()
+    let name: String
+    let number: String
+}
+
+enum SMSSendState: Equatable {
+    case editing
+    case sending
+    case sent
+    case failed(String)
+}
+
+struct SMSComposerSheet: View {
+    let target: SMSTarget
+    let onSend: (String, String, @escaping (Result<Void, SmsError>) -> Void) -> Void
+    let onDismiss: () -> Void
+
+    @State private var messageText: String = ""
+    @State private var sendState: SMSSendState = .editing
+
+    private var charCount: Int { messageText.count }
+    private var segmentCount: Int {
+        if charCount == 0 { return 1 }
+        return charCount <= 160 ? 1 : Int(ceil(Double(charCount) / 153.0))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Header
+            HStack(spacing: 8) {
+                Image(systemName: "message.fill")
+                    .foregroundStyle(Color.accentColor)
+                    .font(.title3)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("New Message to \(target.name)")
+                        .font(.headline)
+                        .lineLimit(1)
+                    Text(target.number)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    onDismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.tertiary)
+                        .font(.title3)
+                }
+                .buttonStyle(.plain)
+                .disabled(sendState == .sending)
+            }
+
+            Divider()
+
+            // State-dependent content
+            switch sendState {
+            case .editing, .sending:
+                VStack(alignment: .trailing, spacing: 6) {
+                    TextEditor(text: $messageText)
+                        .font(.body)
+                        .frame(minHeight: 80, maxHeight: 110)
+                        .padding(6)
+                        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.primary.opacity(0.1), lineWidth: 1)
+                        )
+                        .disabled(sendState == .sending)
+
+                    HStack {
+                        if sendState == .sending {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text("Sending via Android…")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        Text("\(charCount) chars · \(segmentCount) SMS")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+            case .sent:
+                VStack(spacing: 10) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.green)
+                    Text("Message Sent via Android")
+                        .font(.headline)
+                    Text("Delivered to your phone's cellular network.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 90)
+
+            case let .failed(error):
+                VStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.red)
+                    Text("Failed to Send SMS")
+                        .font(.headline)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 8)
+                }
+                .frame(maxWidth: .infinity, minHeight: 90)
+            }
+
+            // Bottom Actions
+            HStack {
+                switch sendState {
+                case .editing:
+                    Button("Cancel") { onDismiss() }
+                        .keyboardShortcut(.escape, modifiers: [])
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+                    Spacer()
+                    Button("Send SMS") {
+                        performSend()
+                    }
+                    .keyboardShortcut(.return, modifiers: [])
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                    .disabled(messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                case .sending:
+                    Spacer()
+                    Button("Sending…") {}
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                        .disabled(true)
+
+                case .sent:
+                    Spacer()
+                    Button("Done") { onDismiss() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                        .keyboardShortcut(.return, modifiers: [])
+
+                case .failed:
+                    Button("Cancel") { onDismiss() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+                    Spacer()
+                    Button("Retry") {
+                        sendState = .editing
+                        performSend()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                    .keyboardShortcut(.return, modifiers: [])
+                }
+            }
+            .padding(.top, 2)
+        }
+        .padding(14)
+    }
+
+    private func performSend() {
+        let trimmed = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        sendState = .sending
+        onSend(target.number, trimmed) { result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success:
+                    sendState = .sent
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                        onDismiss()
+                    }
+                case let .failure(error):
+                    sendState = .failed(error.localizedDescription)
+                }
+            }
+        }
+    }
+}
+

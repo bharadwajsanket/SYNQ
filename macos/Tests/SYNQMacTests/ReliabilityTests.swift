@@ -63,4 +63,78 @@ final class ReliabilityTests: XCTestCase {
         let resolved2 = uniqueDestinationURL(target)
         XCTAssertEqual(resolved2.lastPathComponent, "document 3.pdf")
     }
+
+    func testResolveConnectionEndpointPrefersFreshDiscoveredPeerOverStaleEndpoint() {
+        let peer = DiscoveredPeer(
+            serviceName: "SYNQ-pixel",
+            deviceIDHint: "trusted-phone-id",
+            deviceNameHint: "Pixel 9 Pro",
+            platformHint: "android",
+            protocolVersionHint: 1,
+            host: "192.168.43.20",
+            port: 42458
+        )
+        let staleEndpoint = (host: "192.168.1.100", port: 42458, name: "Old Pixel")
+        let resolved = resolveConnectionEndpoint(
+            discoveredPeers: [peer],
+            trustedDeviceIDs: ["trusted-phone-id"],
+            lastTrustedEndpoint: staleEndpoint
+        )
+        XCTAssertEqual(resolved?.host, "192.168.43.20")
+        XCTAssertEqual(resolved?.name, "Pixel 9 Pro")
+    }
+
+    func testResolveConnectionEndpointFallsBackToLastTrustedWhenNoPeersDiscovered() {
+        let staleEndpoint = (host: "192.168.1.100", port: 42458, name: "Pixel")
+        let resolved = resolveConnectionEndpoint(
+            discoveredPeers: [],
+            trustedDeviceIDs: ["trusted-phone-id"],
+            lastTrustedEndpoint: staleEndpoint
+        )
+        XCTAssertEqual(resolved?.host, "192.168.1.100")
+    }
+
+    func testConnectionInitiatorTieBreakIsDeterministic() {
+        XCTAssertTrue(shouldInitiateConnectionImmediately(localDeviceID: "aaaa-1111", remoteDeviceID: "bbbb-2222"))
+        XCTAssertFalse(shouldInitiateConnectionImmediately(localDeviceID: "bbbb-2222", remoteDeviceID: "aaaa-1111"))
+        XCTAssertTrue(shouldInitiateConnectionImmediately(localDeviceID: "AAAA-1111", remoteDeviceID: "bbbb-2222"))
+        XCTAssertEqual(secondaryInitiatorFallbackDelay, 4.0)
+    }
+
+    func testResolveConnectionEndpointCaseInsensitiveMatch() {
+        let peer = DiscoveredPeer(
+            serviceName: "SYNQ-pixel",
+            deviceIDHint: "ABC-123",
+            deviceNameHint: "Pixel",
+            platformHint: "android",
+            protocolVersionHint: 1,
+            host: "192.168.1.50",
+            port: 42458
+        )
+        let resolved = resolveConnectionEndpoint(
+            discoveredPeers: [peer],
+            trustedDeviceIDs: ["abc-123"],
+            lastTrustedEndpoint: nil
+        )
+        XCTAssertEqual(resolved?.host, "192.168.1.50")
+    }
+
+    func testResolveConnectionEndpointIgnoresPeerWithoutHostOrPort() {
+        let peerWithoutHost = DiscoveredPeer(
+            serviceName: "SYNQ-pixel",
+            deviceIDHint: "trusted-id",
+            deviceNameHint: "Pixel",
+            platformHint: "android",
+            protocolVersionHint: 1,
+            host: nil,
+            port: nil
+        )
+        let fallback = (host: "192.168.1.10", port: 42458, name: "Fallback")
+        let resolved = resolveConnectionEndpoint(
+            discoveredPeers: [peerWithoutHost],
+            trustedDeviceIDs: ["trusted-id"],
+            lastTrustedEndpoint: fallback
+        )
+        XCTAssertEqual(resolved?.host, "192.168.1.10")
+    }
 }

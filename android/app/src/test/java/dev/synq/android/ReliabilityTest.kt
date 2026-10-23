@@ -79,4 +79,11 @@ class ReliabilityTest {
         assertFalse(recovered.getValue("fin-1").active)
         assertEquals("Saved", recovered.getValue("fin-1").status)
     }
+
+    @Test fun connectionInitiationTieBreakIsDeterministic() {
+        assertEquals(true, shouldInitiateConnectionImmediately("aaaa-1111", "bbbb-2222"))
+        assertEquals(false, shouldInitiateConnectionImmediately("bbbb-2222", "aaaa-1111"))
+        assertEquals(true, shouldInitiateConnectionImmediately("AAAA-1111", "bbbb-2222"))
+        assertEquals(4_000L, SECONDARY_INITIATOR_FALLBACK_DELAY_MILLIS)
+    }
 }

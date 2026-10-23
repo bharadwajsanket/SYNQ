@@ -66,6 +66,8 @@ final class SYNQSettings: ObservableObject {
     @Published private(set) var hasCompletedOnboarding: Bool
     @Published private(set) var notificationHistoryEnabled: Bool
     @Published private(set) var clipboardAutoSync: Bool
+    @Published private(set) var quietModeEnabled: Bool
+    @Published private(set) var quietModeUpdatedAt: Int64
 
     private let defaults = UserDefaults.standard
 
@@ -76,6 +78,8 @@ final class SYNQSettings: ObservableObject {
         hasCompletedOnboarding = storedDefaults.bool(forKey: "settings.onboarding.completed")
         notificationHistoryEnabled = storedDefaults.bool(forKey: "settings.notificationHistory.enabled")
         clipboardAutoSync = storedDefaults.object(forKey: "settings.clipboard.autoSync") as? Bool ?? true
+        quietModeEnabled = storedDefaults.bool(forKey: "settings.quietMode.enabled")
+        quietModeUpdatedAt = Int64(storedDefaults.object(forKey: "settings.quietMode.updatedAt") as? NSNumber ?? 0)
         globalFeatures = Dictionary(uniqueKeysWithValues: SYNQFeature.allCases.map {
             ($0, storedDefaults.object(forKey: "settings.global.\($0.rawValue)") as? Bool ?? ($0 != .media))
         })
@@ -121,6 +125,14 @@ final class SYNQSettings: ObservableObject {
     func setClipboardAutoSync(_ enabled: Bool) {
         defaults.set(enabled, forKey: "settings.clipboard.autoSync")
         clipboardAutoSync = enabled
+    }
+
+    func setQuietModeEnabled(_ enabled: Bool, updatedAt: Int64? = nil) {
+        let timestamp = updatedAt ?? Int64(Date().timeIntervalSince1970 * 1000)
+        defaults.set(enabled, forKey: "settings.quietMode.enabled")
+        defaults.set(timestamp, forKey: "settings.quietMode.updatedAt")
+        quietModeEnabled = enabled
+        quietModeUpdatedAt = timestamp
     }
 
     func setForDevice(_ deviceID: String, feature: SYNQFeature, enabled: Bool) {

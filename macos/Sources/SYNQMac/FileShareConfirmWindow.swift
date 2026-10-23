@@ -294,7 +294,7 @@ private struct FileShareConfirmView: View {
                     }
                 } else {
                     HStack(spacing: 8) {
-                        Image(systemName: "phone.fill")
+                        Image(systemName: "smartphone")
                             .foregroundStyle(Color.accentColor)
                         Text(connected.name)
                             .font(.system(size: 13, weight: .medium))

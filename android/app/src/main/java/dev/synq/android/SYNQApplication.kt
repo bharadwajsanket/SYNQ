@@ -52,19 +52,47 @@ class SYNQApplication : Application() {
         val deviceName = settings.state.value.deviceName
         pairing = PairingCoordinator(this, deviceId, deviceName, settings = settings)
         discovery = NsdDiscoveryService(this, LocalDiscoveryIdentity(deviceId, deviceName))
+        var fallbackJob: kotlinx.coroutines.Job? = null
         applicationScope.launch {
             combine(discovery.peers, pairing.trustedDeviceIds, pairing.state) { peers, trustedIds, state ->
                 Triple(peers, trustedIds, state)
             }.collect { (peers, trustedIds, state) ->
-                if (isSYNQEnabled && state is PairingState.Idle) {
-                    peers.firstOrNull {
+                if (isSYNQEnabled && (state is PairingState.Idle || state is PairingState.Failed) && !pairing.automaticReconnectSuppressed) {
+                    val trustedPeer = peers.firstOrNull {
                         val peerId = it.deviceIdHint
-                        peerId != null && peerId in trustedIds && deviceId < peerId
-                    }?.let { peer ->
-                        peer.host?.let { pairing.pair(it, peer.port ?: 42_458, peer.deviceNameHint) }
+                        peerId != null && peerId in trustedIds
                     }
-                } else if (state is PairingState.Connected) {
-                    lastBatteryIntent?.let(::publishBattery)
+                    if (trustedPeer != null) {
+                        val peerId = trustedPeer.deviceIdHint!!
+                        val host = trustedPeer.host
+                        val port = trustedPeer.port ?: 42_458
+                        if (host != null) {
+                            if (shouldInitiateConnectionImmediately(deviceId, peerId)) {
+                                fallbackJob?.cancel()
+                                fallbackJob = null
+                                pairing.pair(host, port, trustedPeer.deviceNameHint, userInitiated = false)
+                            } else {
+                                if (fallbackJob == null || fallbackJob?.isActive == false) {
+                                    fallbackJob = applicationScope.launch {
+                                        kotlinx.coroutines.delay(SECONDARY_INITIATOR_FALLBACK_DELAY_MILLIS)
+                                        if (isSYNQEnabled && (pairing.state.value is PairingState.Idle || pairing.state.value is PairingState.Failed) && !pairing.automaticReconnectSuppressed) {
+                                            android.util.Log.i("SYNQ", "PAIRING initiating secondary fallback connection to ${trustedPeer.deviceNameHint}")
+                                            pairing.pair(host, port, trustedPeer.deviceNameHint, userInitiated = false)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        fallbackJob?.cancel()
+                        fallbackJob = null
+                    }
+                } else {
+                    fallbackJob?.cancel()
+                    fallbackJob = null
+                    if (state is PairingState.Connected) {
+                        lastBatteryIntent?.let(::publishBattery)
+                    }
                 }
             }
         }

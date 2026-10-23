@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import Network
 
 enum LegacyPreferences {
     static func migrateIfNeeded(
@@ -88,6 +90,15 @@ final class BonjourDiscovery: NSObject, ObservableObject {
     var localDeviceID: String { deviceID }
     var localDeviceName: String { deviceName }
     private lazy var ownServiceName = "SYNQ-\(deviceID.prefix(8))"
+    var onNetworkPathChanged: (() -> Void)?
+
+    private let pathMonitor = NWPathMonitor()
+    private let monitorQueue = DispatchQueue(label: "dev.synq.discovery.pathMonitor")
+    private var lastPathStatus: NWPath.Status?
+    private var lastInterfaceNames: [String] = []
+    private var refreshWorkItem: DispatchWorkItem?
+    private var restartWorkItem: DispatchWorkItem?
+    private var wakeObserverToken: NSObjectProtocol?
 
     init(deviceName preferredName: String? = nil) {
         let defaults = UserDefaults.standard
@@ -100,7 +111,87 @@ final class BonjourDiscovery: NSObject, ObservableObject {
         deviceName = preferredName ?? Host.current().localizedName ?? "Mac"
         super.init()
         browser.delegate = self
+        setupPathMonitoring()
+        setupSleepWakeMonitoring()
         start()
+    }
+
+    deinit {
+        pathMonitor.cancel()
+        refreshWorkItem?.cancel()
+        restartWorkItem?.cancel()
+        if let wakeObserverToken {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserverToken)
+        }
+    }
+
+    private func setupPathMonitoring() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor in
+                self?.handlePathUpdate(path)
+            }
+        }
+        pathMonitor.start(queue: monitorQueue)
+    }
+
+    private func setupSleepWakeMonitoring() {
+        wakeObserverToken = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                SYNQLog.discovery("system did wake from sleep — scheduling discovery refresh")
+                self?.onNetworkPathChanged?()
+                self?.scheduleRefresh(delay: 1.2)
+            }
+        }
+    }
+
+    private func handlePathUpdate(_ path: NWPath) {
+        let newStatus = path.status
+        let interfaces = path.availableInterfaces.map(\.name).sorted()
+        let hadPrevious = lastPathStatus != nil
+        let statusChanged = lastPathStatus != newStatus
+        let interfacesChanged = lastInterfaceNames != interfaces
+        lastPathStatus = newStatus
+        lastInterfaceNames = interfaces
+
+        guard hadPrevious, isRunning else { return }
+
+        if statusChanged || interfacesChanged {
+            SYNQLog.discovery("network path changed: status=\(newStatus) interfaces=\(interfaces)")
+            onNetworkPathChanged?()
+            if newStatus == .satisfied {
+                scheduleRefresh(delay: 0.8)
+            } else {
+                peers.removeAll()
+                services.removeAll()
+            }
+        }
+    }
+
+    func scheduleRefresh(delay: TimeInterval = 0.5) {
+        refreshWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isRunning else { return }
+            self.refresh()
+        }
+        refreshWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    func refresh() {
+        guard isRunning else { return }
+        SYNQLog.discovery("refreshing discovery and registration")
+        stop()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.restartWorkItem = nil
+            self.start()
+        }
+        restartWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
     }
 
     func updateDeviceName(_ value: String) {
@@ -109,7 +200,15 @@ final class BonjourDiscovery: NSObject, ObservableObject {
         let restart = isRunning
         if restart { stop() }
         deviceName = name
-        if restart { DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.start() } }
+        if restart {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.restartWorkItem = nil
+                self.start()
+            }
+            restartWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+        }
     }
 
     func start() {
@@ -121,6 +220,10 @@ final class BonjourDiscovery: NSObject, ObservableObject {
     }
 
     func stop() {
+        refreshWorkItem?.cancel()
+        refreshWorkItem = nil
+        restartWorkItem?.cancel()
+        restartWorkItem = nil
         guard isRunning else { return }
         isRunning = false
         browser.stop()

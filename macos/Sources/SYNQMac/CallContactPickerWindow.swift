@@ -7,7 +7,8 @@ final class CallContactPickerWindowController: NSWindowController {
         favourites: FavouriteContactsStore,
         onDial: @escaping (String) -> Void,
         onManualDial: @escaping () -> Void,
-        onSyncContacts: @escaping () -> Void
+        onSyncContacts: @escaping () -> Void,
+        onSendSMS: ((String, String, @escaping (Result<Void, SmsError>) -> Void) -> Void)? = nil
     ) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 500, height: 560),
@@ -34,6 +35,7 @@ final class CallContactPickerWindowController: NSWindowController {
                 self?.close()
             },
             onSyncContacts: onSyncContacts,
+            onSendSMS: onSendSMS,
             onClose: { [weak self] in self?.close() }
         ))
     }

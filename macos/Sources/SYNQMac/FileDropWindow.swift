@@ -97,7 +97,7 @@ struct FileDropPopoverView: View {
                         .font(.system(size: 12, weight: .medium))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 7)
-                        .background(Color.primary.opacity(0.08), in: Capsule())
+                        .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Color.accentColor)
@@ -113,7 +113,7 @@ struct FileDropPopoverView: View {
                         .font(.system(size: 11, weight: .semibold))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 7)
-                        .background(Color.accentColor.opacity(0.13), in: Capsule())
+                        .background(Color.accentColor.opacity(0.13), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Color.accentColor)

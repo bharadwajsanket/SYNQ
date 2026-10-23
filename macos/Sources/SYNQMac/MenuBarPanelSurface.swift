@@ -177,6 +177,10 @@ struct NativeLiquidGlassButtonModifier: ViewModifier {
             content
                 .buttonStyle(.glass)
                 .buttonBorderShape(.capsule)
+        } else if #available(macOS 14.0, *) {
+            content
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
         } else {
             content.buttonStyle(.bordered)
         }

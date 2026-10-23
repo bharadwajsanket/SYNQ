@@ -33,10 +33,10 @@ Pair your devices once. SYNQ reconnects when they’re back on the same network.
 
 |  |  |
 |---|---|
-| **Clipboard**<br>Send copied text between Mac and Android. | **Files**<br>Transfer files and folders with progress and integrity checks. |
-| **Phone notifications**<br>See Android notifications in macOS Notification Center and use supported quick replies. | **Calls from Mac**<br>Find synced contacts or enter a number from the menu bar. Your Android phone confirms and places the call. |
-| **Contacts and favourites**<br>Browse synced phone contacts and keep favourite numbers close at hand. | **Media and battery**<br>Control supported Mac media players and see your phone’s battery status on your Mac. |
-| **Guest Share**<br>Let a nearby guest send files to your Mac through a temporary QR link, without pairing. | **Find your phone**<br>Ring it or send a quiet ping from your Mac. |
+| **Clipboard & Smart Links**<br>Send copied text and detected links seamlessly between Mac and Android. | **Files & Transfers**<br>AirDrop-style transfers with live previews, folder support, and direct drag-and-drop. |
+| **Phone notifications**<br>See Android notifications in macOS Notification Center and use supported quick replies. | **Calls & SMS from Mac**<br>Place calls and compose SMS text messages directly to contacts from the menu bar. |
+| **Contacts & Favourites**<br>Browse synced phone contacts and keep favourite numbers close at hand. | **Remote File Browser**<br>Explore Android files and download documents on demand from your Mac. |
+| **Guest Share**<br>Let a nearby guest send files to your Mac through a temporary QR link, without pairing. | **Find your phone**<br>Ring it or send a quiet ping from your Mac with clear status feedback. |
 
 ## Get SYNQ
 
@@ -66,6 +66,7 @@ Some features need extra access on Android. SYNQ asks when you enable the relate
 | Contacts | Syncing the phone directory and choosing call favourites. |
 | Notification access | Mirroring notifications and relaying supported notification actions. |
 | Phone state and call controls | Optional call status, answer, decline, and hang-up integration. |
+| Send SMS | Sending SMS text messages composed from your Mac menu bar. |
 | Notifications | Showing SYNQ’s pairing, transfer, and call confirmation alerts. |
 
 SYNQ does not read your SMS database or call log and does not replace your default phone or messaging app. See the [telephony and permissions policy](docs/sms-call-policy.md), [security notes](docs/security-testing.md), and [security reporting guide](SECURITY.md).

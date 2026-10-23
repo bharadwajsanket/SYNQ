@@ -1,8 +1,36 @@
-# SYNQ v1.5.4 — Release Notes
+# SYNQ v2.5.4 — Release Notes
 
-Complete native, local-first companion suite connecting macOS and Android devices.
+Release v2.5.4 brings comprehensive UI polish, navigation and layout fixes, in-panel call and device finding feedback, an expanded Android permissions overview, and reliability enhancements across macOS and Android.
 
 SYNQ is developed and maintained by **Sanket Bharadwaj**.
+
+---
+
+## What's New in v2.5.4
+
+### macOS Popover & UI Polish
+- **Consistent Action Button Styling:** The "Find Device" action now shares the exact rounded pill capsule styling and height of all other primary grid buttons, maintaining uniform aesthetics across the menu bar popover.
+- **In-App Ring & Ping Feedback:** Replaced system notification banners for Ring and Ping with native, real-time in-panel status indicators inside SYNQ (`Ringing Android…`, `Phone is ringing`, `Ping delivered`, `Ringing stopped`, with connection and timeout alerts).
+- **Pill-Style Call Back Button:** Aligned the Call from Mac back button with Guest Share's capsule design (`chevron.left` pill).
+- **Cleaner Contact Rows & Safe SMS:** Removed redundant dialer icons from favourite contact chips and directory rows (since tapping the contact directly dials). Isolated the SMS button tap handling so sending an SMS never triggers an accidental call.
+- **Non-Dismissing Call Confirmation:** Replaced the window-modal alert sheet with an in-panel confirmation overlay. Pressing Cancel, pressing Escape, or tapping the backdrop dismisses only the confirmation dialog and returns cleanly to the Call screen without closing the SYNQ popover.
+- **Modern Blip/AirDrop Transfers HUD:** Completely overhauled the File Transfers window into a modern, compact HUD with rounded translucent glass styling, large hero preview card with image thumbnail generation, prominent green circular completion badge, accented filename pill, "Received from [Device]" metadata, and instant-action pill buttons (`Copy` directly to clipboard with image paste support, and `Open ⌄` split button). Supports direct drag-and-drop from the preview card into Finder, Desktop, or apps, and automatically clears the popover transfer badge when closed.
+- **Reliable SMS Messaging from Mac:** Compose and send SMS text messages directly to any contact or phone number from the Mac menu bar. Fixed asynchronous carrier delivery acknowledgments so cellular dispatch confirms immediately without false timeout errors.
+
+### Android Navigation & Settings Polish
+- **Bottom Navigation Layout Fix:** Material 3 `NavigationBar` anchored properly to system and gesture navigation insets, eliminating empty vertical gaps and selected-state clipping.
+- **Find Mac Dropdown Layout:** Redesigned Find Mac control with a standardized `OutlinedButton`, rounded dropdown menu (`16.dp`), leading icons (`Notifications` for alarm, `PlayArrow` for ping), two-line action descriptions, and clean item dividers.
+- **About → Permissions Page:** Added a dedicated Permissions & Privacy page explaining each permission used by SYNQ (`INTERNET`, `POST_NOTIFICATIONS`, `BIND_NOTIFICATION_LISTENER_SERVICE`, `CALL_PHONE`, `READ_CONTACTS`, `SEND_SMS`, Storage Access Framework), what feature uses it, whether it is required or optional, and providing a quick link to Android app settings.
+- **Settings Footer:** Added a subtle footer in settings reading “Made with ♥ by Sanket” linking directly to [https://github.com/bharadwajsanket](https://github.com/bharadwajsanket).
+- **Smart Link Detection & Ack:** Clean bidirectional link delivery with neutral status and peer opened acknowledgments.
+
+### Reliability & Parity
+- Reconnection state convergence and automatic listener restarts after network transitions.
+- All 113 macOS unit tests and 54 Android unit tests pass with zero regressions.
+
+---
+
+# SYNQ v1.5.4 — Release Notes
 
 ---
 

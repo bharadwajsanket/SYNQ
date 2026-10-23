@@ -19,6 +19,16 @@ import android.os.SystemClock
 import android.media.AudioAttributes
 import android.media.Ringtone
 import android.media.RingtoneManager
+import android.app.Activity
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
+import android.telephony.SmsManager
+import android.webkit.MimeTypeMap
+import java.io.File
+import java.io.FileInputStream
+import java.io.InputStream
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -141,6 +151,8 @@ class PairingCoordinator(
     private val cancelledTransferIds = ConcurrentHashMap.newKeySet<String>()
     private val outgoingFileJobs = ConcurrentHashMap<String, Job>()
     private val outgoingFileSources = ConcurrentHashMap<String, Uri>()
+    private val outgoingLocalFileSources = ConcurrentHashMap<String, File>()
+    private val processedSmsSendIds = ConcurrentHashMap.newKeySet<String>()
     val deviceId: String get() = localDeviceId
     private var server: ServerSocket? = null
     private var session: Session? = null
@@ -149,6 +161,8 @@ class PairingCoordinator(
     private val diagnostics = SYNQDiagnostics()
     private val remoteCallRequest = RemoteCallRequest(appContext)
     private var lastRemoteCallRequestAt = 0L
+    var automaticReconnectSuppressed: Boolean = false
+        private set
 
     init {
         scope.launch {
@@ -158,6 +172,7 @@ class PairingCoordinator(
                 if (!featureEnabled(SYNQFeature.PING)) clearPingStatus()
                 quickActions.policyChanged()
                 sendFeatureState()
+                sendQuietModeState()
             }
         }
     }
@@ -174,14 +189,25 @@ class PairingCoordinator(
         }
     }
 
-    fun pair(host: String, port: Int, peerName: String) {
+    fun pair(host: String, port: Int, peerName: String, userInitiated: Boolean = true) {
+        if (userInitiated) automaticReconnectSuppressed = false
         diagnostics.record("pairing", "connection_started")
         android.util.Log.i("SYNQ", "PAIRING started peer=$peerName")
         mutableState.value = PairingState.Connecting(peerName)
         scope.launch {
-            runCatching { Socket(host, port) }
+            runCatching {
+                Socket().apply {
+                    connect(java.net.InetSocketAddress(host, port), 6000)
+                }
+            }
                 .onSuccess { handle(it, initiatedLocally = true, peerHint = peerName) }
-                .onFailure { fail("Could not connect to $peerName") }
+                .onFailure {
+                    if (trustedDeviceIds.value.isNotEmpty() && !userInitiated) {
+                        mutableState.value = PairingState.Idle
+                    } else {
+                        fail("Could not connect to $peerName")
+                    }
+                }
         }
     }
 
@@ -193,6 +219,7 @@ class PairingCoordinator(
     }
 
     fun cancel() {
+        automaticReconnectSuppressed = true
         val current = session
         session = null
         cancelIncomingFiles()
@@ -208,6 +235,7 @@ class PairingCoordinator(
     }
 
     fun dismiss() {
+        automaticReconnectSuppressed = true
         val current = session
         session = null
         cancelIncomingFiles()
@@ -642,41 +670,75 @@ class PairingCoordinator(
             mutableFileTransferStatus.value = "Not connected — file was not sent"
             return
         }
+        val resolver = appContext.contentResolver
+        val metadata = runCatching {
+            var name = "file"
+            var size = -1L
+            resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }?.let { name = cursor.getString(it) ?: name }
+                    cursor.getColumnIndex(OpenableColumns.SIZE).takeIf { it >= 0 && !cursor.isNull(it) }?.let { size = cursor.getLong(it) }
+                }
+            }
+            Triple(name.take(255), resolver.getType(uri) ?: "application/octet-stream", size)
+        }.getOrNull()
+        if (metadata == null) {
+            mutableFileTransferStatus.value = "Could not read the selected file"
+            return
+        }
         val transferId = UUID.randomUUID().toString()
         outgoingFileSources[transferId] = uri
-        diagnostics.record("transfer", "send_started")
-        updateFileTransfer(transferId, "Selected file", "Preparing…", true)
-        val job = scope.launch {
-            val resolver = appContext.contentResolver
-            val metadata = runCatching {
-                var name = "file"
-                var size = -1L
-                resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
-                    if (cursor.moveToFirst()) {
-                        cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }?.let { name = cursor.getString(it) ?: name }
-                        cursor.getColumnIndex(OpenableColumns.SIZE).takeIf { it >= 0 && !cursor.isNull(it) }?.let { size = cursor.getLong(it) }
-                    }
-                }
-                Triple(name.take(255), resolver.getType(uri) ?: "application/octet-stream", size)
-            }.getOrElse {
-                updateFileTransfer(transferId, "Selected file", "Could not read the selected file", false)
-                return@launch
-            }
-            if (metadata.third < 0) {
-                mutableFileTransferStatus.value = "This file provider did not report a file size"
-                updateFileTransfer(transferId, metadata.first, mutableFileTransferStatus.value!!, false)
-                return@launch
-            }
-            if (metadata.third > MAX_FILE_SIZE) {
-                mutableFileTransferStatus.value = "File is larger than 10 GB"
-                updateFileTransfer(transferId, metadata.first, mutableFileTransferStatus.value!!, false)
-                return@launch
-            }
+        startSendingFile(connectedSession, transferId, metadata.first, metadata.second, metadata.third) {
+            appContext.contentResolver.openInputStream(uri)
+        }
+    }
 
-            updateFileTransfer(transferId, metadata.first, "Preparing ${metadata.first}…", true)
+    fun sendLocalFile(file: File) {
+        if (!isFeatureAvailable(SYNQFeature.FILES)) {
+            mutableFileTransferStatus.value = "File transfer is turned off on one of your devices"
+            return
+        }
+        val connectedSession = session
+        if (connectedSession == null || mutableState.value !is PairingState.Connected) {
+            mutableFileTransferStatus.value = "Not connected — file was not sent"
+            return
+        }
+        if (!file.exists() || !file.isFile || !file.canRead()) {
+            mutableFileTransferStatus.value = "File cannot be read"
+            return
+        }
+        val transferId = UUID.randomUUID().toString()
+        outgoingLocalFileSources[transferId] = file
+        val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension.lowercase()) ?: "application/octet-stream"
+        startSendingFile(connectedSession, transferId, file.name.take(255), mimeType, file.length()) {
+            FileInputStream(file)
+        }
+    }
+
+    private fun startSendingFile(
+        connectedSession: Session,
+        transferId: String,
+        name: String,
+        mimeType: String,
+        size: Long,
+        openInputStream: () -> InputStream?,
+    ) {
+        diagnostics.record("transfer", "send_started")
+        if (size < 0) {
+            mutableFileTransferStatus.value = "This file provider did not report a file size"
+            updateFileTransfer(transferId, name, mutableFileTransferStatus.value!!, false)
+            return
+        }
+        if (size > MAX_FILE_SIZE) {
+            mutableFileTransferStatus.value = "File is larger than 10 GB"
+            updateFileTransfer(transferId, name, mutableFileTransferStatus.value!!, false)
+            return
+        }
+        updateFileTransfer(transferId, name, "Preparing $name…", true)
+        val job = scope.launch {
             val digest = MessageDigest.getInstance("SHA-256")
             val hash = runCatching {
-                resolver.openInputStream(uri)?.use { input ->
+                openInputStream()?.use { input ->
                     val buffer = ByteArray(FILE_CHUNK_SIZE)
                     while (true) {
                         coroutineContext.ensureActive()
@@ -688,15 +750,15 @@ class PairingCoordinator(
                 Base64.encodeToString(digest.digest(), Base64.NO_WRAP)
             }.getOrElse {
                 mutableFileTransferStatus.value = "Could not read the selected file"
-                updateFileTransfer(transferId, metadata.first, mutableFileTransferStatus.value!!, false)
+                updateFileTransfer(transferId, name, mutableFileTransferStatus.value!!, false)
                 return@launch
             }
 
             val offerPayload = JSONObject()
                 .put("transferId", transferId)
-                .put("name", metadata.first)
-                .put("mimeType", metadata.second)
-                .put("size", metadata.third)
+                .put("name", name)
+                .put("mimeType", mimeType)
+                .put("size", size)
                 .put("sha256", hash)
                 .toString().toByteArray()
             val offer = Crypto.encrypt(connectedSession.pairingKey!!, offerPayload)
@@ -712,25 +774,25 @@ class PairingCoordinator(
                 ))) {
                 pendingFileAccepts.remove(transferId)
                 mutableFileTransferStatus.value = "Connection lost — file was not sent"
-                updateFileTransfer(transferId, metadata.first, mutableFileTransferStatus.value!!, false)
+                updateFileTransfer(transferId, name, mutableFileTransferStatus.value!!, false)
                 return@launch
             }
-            updateFileTransfer(transferId, metadata.first, "Waiting for Mac…", true)
+            updateFileTransfer(transferId, name, "Waiting for Mac…", true)
             if (withTimeoutOrNull(10_000) { accepted.await() } != true) {
                 pendingFileAccepts.remove(transferId)
                 if (transferId in cancelledTransferIds || outgoingFileJobs[transferId] == null) return@launch
-                updateFileTransfer(transferId, metadata.first, "Mac did not accept the file", false)
+                updateFileTransfer(transferId, name, "Mac did not accept the file", false)
                 return@launch
             }
 
             val completed = CompletableDeferred<Boolean>()
             pendingFileCompletions[transferId] = completed
             val sent = runCatching {
-                resolver.openInputStream(uri)?.use { input ->
+                openInputStream()?.use { input ->
                     val buffer = ByteArray(FILE_CHUNK_SIZE)
                     var total = 0L
                     var sequence = 0L
-                    val progress = TransferProgress(metadata.third)
+                    val progress = TransferProgress(size)
                     while (true) {
                         coroutineContext.ensureActive()
                         val count = input.read(buffer)
@@ -747,10 +809,10 @@ class PairingCoordinator(
                         )))
                         total += count
                         progress.status(total)?.let {
-                            updateFileTransfer(transferId, metadata.first, "Sending ${metadata.first}: $it", true)
+                            updateFileTransfer(transferId, name, "Sending $name: $it", true)
                         }
                     }
-                    updateFileTransfer(transferId, metadata.first, "Verifying ${metadata.first} on Mac…", true)
+                    updateFileTransfer(transferId, name, "Verifying $name on Mac…", true)
                 } ?: error("File unavailable")
                 val completionPayload = Crypto.encrypt(
                     connectedSession.pairingKey!!,
@@ -767,17 +829,18 @@ class PairingCoordinator(
             if (!sent) {
                 pendingFileCompletions.remove(transferId)
                 if (transferId in cancelledTransferIds || outgoingFileJobs[transferId] == null) return@launch
-                updateFileTransfer(transferId, metadata.first, "File transfer failed", false)
+                updateFileTransfer(transferId, name, "File transfer failed", false)
                 return@launch
             }
             if (withTimeoutOrNull(15_000) { completed.await() } == true) {
                 outgoingFileSources.remove(transferId)
-                updateFileTransfer(transferId, metadata.first, "${metadata.first} saved on Mac", false)
+                outgoingLocalFileSources.remove(transferId)
+                updateFileTransfer(transferId, name, "$name saved on Mac", false)
                 diagnostics.record("transfer", "send_completed")
             } else {
                 pendingFileCompletions.remove(transferId)
                 if (transferId in cancelledTransferIds || outgoingFileJobs[transferId] == null) return@launch
-                updateFileTransfer(transferId, metadata.first, "Mac did not confirm the saved file", false)
+                updateFileTransfer(transferId, name, "Mac did not confirm the saved file", false)
             }
         }
         outgoingFileJobs[transferId] = job
@@ -805,7 +868,9 @@ class PairingCoordinator(
     fun cancelFileTransfer() = mutableFileTransfers.value.values.filter { it.active }.forEach { cancelFileTransfer(it.id) }
 
     fun retryFileTransfer(transferId: String) {
-        val uri = outgoingFileSources[transferId] ?: return
+        val uri = outgoingFileSources[transferId]
+        val file = outgoingLocalFileSources[transferId]
+        if (uri == null && file == null) return
         if (session == null || mutableState.value !is PairingState.Connected) {
             removeFileTransfer(transferId, "Reconnect before retrying")
             return
@@ -816,8 +881,10 @@ class PairingCoordinator(
         }
         mutableFileTransfers.value = mutableFileTransfers.value.toMutableMap().apply { remove(transferId) }
         outgoingFileSources.remove(transferId)
+        outgoingLocalFileSources.remove(transferId)
         diagnostics.record("transfer", "retry_started")
-        sendFile(uri)
+        if (uri != null) sendFile(uri)
+        else if (file != null) sendLocalFile(file)
     }
 
     fun clearCompletedFileTransfer(transferId: String) {
@@ -825,6 +892,7 @@ class PairingCoordinator(
         if (transfer.active) return
         mutableFileTransfers.value = mutableFileTransfers.value.toMutableMap().apply { remove(transferId) }
         outgoingFileSources.remove(transferId)
+        outgoingLocalFileSources.remove(transferId)
     }
 
     fun clearCompletedFileTransfers() {
@@ -832,6 +900,7 @@ class PairingCoordinator(
         mutableFileTransfers.value = remaining
         val activeIds = remaining.keys
         outgoingFileSources.keys.retainAll(activeIds)
+        outgoingLocalFileSources.keys.retainAll(activeIds)
     }
 
     fun diagnosticsReport(): String {
@@ -848,7 +917,10 @@ class PairingCoordinator(
 
     fun clearTransferHistory() {
         val inactiveIds = mutableFileTransfers.value.values.filterNot(FileTransferState::active).map(FileTransferState::id)
-        inactiveIds.forEach(outgoingFileSources::remove)
+        inactiveIds.forEach {
+            outgoingFileSources.remove(it)
+            outgoingLocalFileSources.remove(it)
+        }
         mutableFileTransfers.value = mutableFileTransfers.value.filterValues(FileTransferState::active)
         refreshFileTransferSummary()
     }
@@ -913,6 +985,8 @@ class PairingCoordinator(
                     publicKey = current.localEphemeralKey,
                 ),
             )
+        } else {
+            mutableState.value = PairingState.Connecting(peerHint ?: "Mac")
         }
         val result = runCatching {
             while (true) {
@@ -958,13 +1032,26 @@ class PairingCoordinator(
             result.exceptionOrNull()?.let {
                 android.util.Log.w("SYNQ", "PAIRING disconnected before confirmation")
             }
-            fail("Pairing connection lost")
+            if (trustedDeviceIds.value.isNotEmpty()) {
+                session = null
+                cancelIncomingFiles()
+                stopPhoneRinging()
+                mutableMacRinging.value = false
+                mutableRemoteBattery.value = null
+                clearPingStatus()
+                quickActions.reset()
+                mutableRemoteFeatures.value = defaultFeatureState()
+                mutableState.value = PairingState.Idle
+                diagnostics.record("transport", "disconnected", "reconnecting")
+            } else {
+                fail("Pairing connection lost")
+            }
         }
     }
 
     private fun receive(current: Session, message: Message) {
         when (message.kind) {
-            "quick.request", "quick.result", "media.state" -> receiveQuickPayload(current, message)
+            "quick.request", "quick.result", "quick.event", "media.state" -> receiveQuickPayload(current, message)
             "heartbeat.ping" -> {
                 if (message.sessionId != current.id || mutableState.value !is PairingState.Connected) return
                 current.heartbeatSupported = true
@@ -1029,6 +1116,7 @@ class PairingCoordinator(
             }
             "pairing.cancel" -> cancel()
             "features.update" -> receiveFeatureState(current, message)
+            "quiet_mode.update" -> receiveQuietModeState(current, message)
             "clipboard.update" -> receiveClipboard(current, message, rich = false)
             "clipboard.rich" -> receiveClipboard(current, message, rich = true)
             "clipboard.ack" -> {
@@ -1087,6 +1175,9 @@ class PairingCoordinator(
             "files.complete" -> receiveFileComplete(current, message)
             "files.cancel" -> receiveFileCancel(message.transferId)
             "files.cancel.ack" -> message.transferId?.let { removeFileTransfer(it, "Transfer cancelled") }
+            "sms.send" -> receiveSmsSend(current, message)
+            "fs.list" -> receiveFsList(current, message)
+            "fs.pull" -> receiveFsPull(current, message)
         }
     }
 
@@ -1142,6 +1233,78 @@ class PairingCoordinator(
         val result = remoteCallRequest.execute(number, settings.state.value.directCallsEnabled)
         current.send(Message(kind = result.wireKind, sessionId = current.id, messageId = messageId))
         diagnostics.record("calls", "request", outcome = result.name.lowercase())
+    }
+
+    private fun receiveSmsSend(current: Session, message: Message) {
+        val messageId = message.messageId ?: return
+        if (mutableState.value !is PairingState.Connected || message.sessionId != current.id || !current.acceptMessageId(messageId)) return
+        val nonce = message.nonce ?: return
+        val ciphertext = message.ciphertext ?: return
+        val plaintext = Crypto.decrypt(current.pairingKey ?: return, nonce, ciphertext) ?: return
+        val payload = runCatching { JSONObject(plaintext.toString(Charsets.UTF_8)) }.getOrNull() ?: return
+        val sendId = payload.optString("sendId", UUID.randomUUID().toString())
+        val recipient = payload.optString("recipient").trim()
+        val body = payload.optString("body")
+
+        if (!processedSmsSendIds.add(sendId)) {
+            return
+        }
+
+        fun sendSmsResult(status: String, error: String? = null) {
+            val responsePayload = JSONObject()
+                .put("sendId", sendId)
+                .put("status", status)
+            if (error != null) responsePayload.put("error", error)
+            val enc = Crypto.encrypt(current.pairingKey!!, responsePayload.toString().toByteArray(Charsets.UTF_8))
+            current.send(
+                Message(
+                    kind = "sms.result",
+                    sessionId = current.id,
+                    messageId = UUID.randomUUID().toString(),
+                    nonce = enc.nonce,
+                    ciphertext = enc.ciphertext
+                )
+            )
+        }
+
+        if (!settings.isEnabled(SYNQFeature.CALLS, current.remoteDeviceId)) {
+            sendSmsResult("disabled", "Messaging/Calls disabled on Android")
+            return
+        }
+
+        val normalizedNumber = normalizedPhoneNumber(recipient)
+        if (normalizedNumber.isNullOrBlank() || body.isEmpty()) {
+            sendSmsResult("invalid_recipient", "Invalid recipient phone number or empty message")
+            return
+        }
+
+        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+            sendSmsResult("permission_denied", "SMS permission not granted on Android. Please grant SMS permission in phone settings.")
+            return
+        }
+
+        scope.launch(Dispatchers.Main) {
+            try {
+                val smsManager: SmsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    appContext.getSystemService(SmsManager::class.java) ?: @Suppress("DEPRECATION") SmsManager.getDefault()
+                } else {
+                    @Suppress("DEPRECATION")
+                    SmsManager.getDefault()
+                }
+
+                val parts = smsManager.divideMessage(body)
+                if (parts.size > 1) {
+                    smsManager.sendMultipartTextMessage(normalizedNumber, null, parts, null, null)
+                } else {
+                    smsManager.sendTextMessage(normalizedNumber, null, body, null, null)
+                }
+                android.util.Log.i("SYNQ", "SMS dispatched to telephony stack for $normalizedNumber (parts=${parts.size})")
+                sendSmsResult("sent")
+            } catch (e: Exception) {
+                android.util.Log.e("SYNQ", "Failed to send SMS", e)
+                sendSmsResult("failed", e.message ?: "Failed to send SMS")
+            }
+        }
     }
 
     fun sendContactsResponse(requestId: String? = null) {
@@ -1311,7 +1474,19 @@ class PairingCoordinator(
         if (notificationId.isBlank() || notificationId.length > 512 ||
             !actionToken.matches(Regex("[0-9a-f]{64}")) ||
             (replyText?.length ?: 0) > 4_096) return fail("Invalid notification action")
-        SYNQNotificationListenerService.perform(notificationId, actionToken, replyText)
+        val performed = SYNQNotificationListenerService.perform(notificationId, actionToken, replyText)
+        if (!performed) {
+            android.util.Log.w("SYNQ", "PLUGIN notification action failed or rejected token=$actionToken")
+            current.send(
+                Message(
+                    kind = "notifications.action_failed",
+                    sessionId = current.id,
+                    messageId = messageId,
+                ),
+            )
+            diagnostics.record("notification", "action_failed")
+            return
+        }
         diagnostics.record("notification", if (replyText == null) "action_requested" else "reply_requested")
     }
 
@@ -1329,19 +1504,23 @@ class PairingCoordinator(
             message.nonce ?: return,
             message.ciphertext ?: return,
         ) ?: return fail("Invalid encrypted clipboard message")
-        val clip = if (rich) {
+        val (clip, rawText) = if (rich) {
             val content = RichClipboardContent.decode(plaintext)
                 ?: return fail("Invalid rich clipboard message")
-            ClipData.newHtmlText("SYNQ", content.text, content.html)
+            ClipData.newHtmlText("SYNQ", content.text, content.html) to content.text
         } else {
             val text = plaintext.toString(Charsets.UTF_8)
             if (!clipboardTextFits(text)) return fail("Invalid clipboard message")
-            ClipData.newPlainText("SYNQ", text)
+            ClipData.newPlainText("SYNQ", text) to text
         }
         appContext.getSystemService(ClipboardManager::class.java).setPrimaryClip(clip)
         mutableClipboardStatus.value = "Clipboard received from Mac"
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             android.widget.Toast.makeText(appContext, "Clipboard received from Mac", android.widget.Toast.LENGTH_SHORT).show()
+        }
+        val detectedLink = SmartLinkDetector.detect(rawText)
+        if (detectedLink != null && isFeatureAvailable(SYNQFeature.LINKS) && !settings.state.value.quietModeEnabled) {
+            quickActions.handleReceivedClipboardLink(detectedLink)
         }
         diagnostics.record("clipboard", if (rich) "rich_received" else "text_received")
         android.util.Log.i("SYNQ", "PLUGIN clipboard received")
@@ -1385,6 +1564,12 @@ class PairingCoordinator(
         ) return fail("Invalid file offer")
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             return fail("Receiving files requires Android 10 or newer")
+        }
+        val freeBytes = runCatching { Environment.getExternalStorageDirectory().freeSpace }.getOrDefault(Long.MAX_VALUE)
+        if (freeBytes in 1 until size) {
+            current.send(Message(kind = "files.rejected", sessionId = current.id, transferId = transferId))
+            updateFileTransfer(transferId, name, "Insufficient storage on phone", false)
+            return
         }
         val transfer = runCatching {
             IncomingFileTransfer(appContext, transferId, name, mimeType, size, hash)
@@ -1482,7 +1667,7 @@ class PairingCoordinator(
                 active = active,
                 progressPercent = percent,
                 startedAtMillis = previous?.startedAtMillis ?: System.currentTimeMillis(),
-                retryable = !active && outgoingFileSources.containsKey(id),
+                retryable = !active && (outgoingFileSources.containsKey(id) || outgoingLocalFileSources.containsKey(id)),
             ))
         }
         pruneTransferHistory()
@@ -1496,7 +1681,7 @@ class PairingCoordinator(
                     status = status,
                     active = false,
                     progressPercent = null,
-                    retryable = outgoingFileSources.containsKey(id),
+                    retryable = outgoingFileSources.containsKey(id) || outgoingLocalFileSources.containsKey(id),
                 ))
             }
         }
@@ -1516,6 +1701,116 @@ class PairingCoordinator(
         val activeTransfers = mutableFileTransfers.value.values.filter { it.active }
         mutableFileTransferActive.value = activeTransfers.isNotEmpty()
         mutableFileTransferStatus.value = activeTransfers.firstOrNull()?.status ?: fallback
+    }
+
+    private fun resolveAuthorizedBrowsingPath(relativePath: String): File? {
+        if (!settings.state.value.fileBrowsingEnabled) return null
+        val currentSession = session ?: return null
+        if (!settings.isEnabled(SYNQFeature.FILES, currentSession.remoteDeviceId)) return null
+
+        val clean = relativePath.trim().removePrefix("/").removePrefix("\\")
+        val components = clean.split("/", "\\").filter { it.isNotEmpty() }
+        if (components.any { it == ".." || it == "." }) return null
+
+        val customPath = settings.state.value.customBrowsingPath
+        val rootDir = if (!customPath.isNullOrBlank()) {
+            val customFile = File(customPath).canonicalFile
+            if (customFile.exists() && customFile.isDirectory && customFile.canRead()) {
+                customFile
+            } else {
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).canonicalFile
+            }
+        } else {
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).canonicalFile
+        }
+        if (!rootDir.exists()) rootDir.mkdirs()
+
+        val target = if (components.isEmpty()) rootDir else File(rootDir, components.joinToString(File.separator)).canonicalFile
+        if (!target.path.startsWith(rootDir.path)) return null
+        return target
+    }
+
+    private fun receiveFsList(current: Session, message: Message) {
+        val messageId = message.messageId ?: return
+        if (mutableState.value !is PairingState.Connected || message.sessionId != current.id || !current.acceptMessageId(messageId)) return
+        val nonce = message.nonce ?: return
+        val ciphertext = message.ciphertext ?: return
+        val plaintext = Crypto.decrypt(current.pairingKey ?: return, nonce, ciphertext) ?: return
+        val payload = runCatching { JSONObject(plaintext.toString(Charsets.UTF_8)) }.getOrNull() ?: return
+        val requestedPath = payload.optString("path", "")
+
+        fun sendFsError(err: String) {
+            val errObj = JSONObject().put("path", requestedPath).put("error", err)
+            val enc = Crypto.encrypt(current.pairingKey!!, errObj.toString().toByteArray(Charsets.UTF_8))
+            current.send(Message(kind = "fs.error", sessionId = current.id, messageId = UUID.randomUUID().toString(), nonce = enc.nonce, ciphertext = enc.ciphertext))
+        }
+
+        val targetDir = resolveAuthorizedBrowsingPath(requestedPath)
+        if (targetDir == null) {
+            sendFsError("Access denied: File browsing is disabled or path is outside authorized storage")
+            return
+        }
+
+        if (!targetDir.exists() || !targetDir.isDirectory) {
+            sendFsError("Folder not found")
+            return
+        }
+
+        val rootDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).canonicalFile
+        val entriesArray = JSONArray()
+        val files = targetDir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
+
+        for (file in files) {
+            if (file.name.startsWith(".") || file.name.endsWith(".bridgey-part")) continue
+            val relPath = file.canonicalPath.removePrefix(rootDir.canonicalPath).removePrefix(File.separator)
+            val mimeType = if (file.isDirectory) "inode/directory" else (MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension.lowercase()) ?: "application/octet-stream")
+            val item = JSONObject()
+                .put("name", file.name)
+                .put("path", relPath)
+                .put("isDirectory", file.isDirectory)
+                .put("size", if (file.isDirectory) 0L else file.length())
+                .put("lastModified", file.lastModified())
+                .put("mimeType", mimeType)
+            entriesArray.put(item)
+        }
+
+        val respObj = JSONObject()
+            .put("path", requestedPath)
+            .put("entries", entriesArray)
+        val enc = Crypto.encrypt(current.pairingKey!!, respObj.toString().toByteArray(Charsets.UTF_8))
+        current.send(
+            Message(
+                kind = "fs.list.response",
+                sessionId = current.id,
+                messageId = UUID.randomUUID().toString(),
+                nonce = enc.nonce,
+                ciphertext = enc.ciphertext
+            )
+        )
+    }
+
+    private fun receiveFsPull(current: Session, message: Message) {
+        val messageId = message.messageId ?: return
+        if (mutableState.value !is PairingState.Connected || message.sessionId != current.id || !current.acceptMessageId(messageId)) return
+        val nonce = message.nonce ?: return
+        val ciphertext = message.ciphertext ?: return
+        val plaintext = Crypto.decrypt(current.pairingKey ?: return, nonce, ciphertext) ?: return
+        val payload = runCatching { JSONObject(plaintext.toString(Charsets.UTF_8)) }.getOrNull() ?: return
+        val requestedPath = payload.optString("path", "")
+
+        fun sendFsError(err: String) {
+            val errObj = JSONObject().put("path", requestedPath).put("error", err)
+            val enc = Crypto.encrypt(current.pairingKey!!, errObj.toString().toByteArray(Charsets.UTF_8))
+            current.send(Message(kind = "fs.error", sessionId = current.id, messageId = UUID.randomUUID().toString(), nonce = enc.nonce, ciphertext = enc.ciphertext))
+        }
+
+        val targetFile = resolveAuthorizedBrowsingPath(requestedPath)
+        if (targetFile == null || !targetFile.exists() || !targetFile.isFile || !targetFile.canRead()) {
+            sendFsError("File not found or cannot be read")
+            return
+        }
+
+        sendLocalFile(targetFile)
     }
 
     private fun authenticateOrPrompt(current: Session) {
@@ -1553,6 +1848,7 @@ class PairingCoordinator(
 
     private fun completeIfConfirmed(current: Session) {
         if (current.localConfirmed && current.remoteConfirmed && mutableState.value !is PairingState.Connected) {
+            automaticReconnectSuppressed = false
             trust.save(current.remoteDeviceId, current.peerName, current.remoteIdentityKey!!)
             mutableState.value = PairingState.Connected(current.remoteDeviceId, current.peerName)
             diagnostics.record("pairing", "connected")
@@ -1562,7 +1858,47 @@ class PairingCoordinator(
             // Sending them here also restores them on reconnect after an app
             // restart, instead of waiting for the user to edit a favourite.
             sendFavouritesUpdate(settings.state.value.favouriteContacts)
+            sendQuietModeState()
             android.util.Log.i("SYNQ", "PAIRING verified peer=${current.peerName}")
+        }
+    }
+
+    private fun sendQuietModeState() {
+        val current = session ?: return
+        if (mutableState.value !is PairingState.Connected || current.pairingKey == null) return
+        val payload = JSONObject()
+            .put("version", 1)
+            .put("enabled", settings.state.value.quietModeEnabled)
+            .put("updatedAt", settings.state.value.quietModeUpdatedAt)
+            .toString()
+            .toByteArray(Charsets.UTF_8)
+        val encrypted = Crypto.encrypt(current.pairingKey!!, payload)
+        current.send(
+            Message(
+                kind = "quiet_mode.update",
+                sessionId = current.id,
+                messageId = UUID.randomUUID().toString(),
+                nonce = encrypted.nonce,
+                ciphertext = encrypted.ciphertext,
+            ),
+        )
+    }
+
+    private fun receiveQuietModeState(current: Session, message: Message) {
+        if (mutableState.value !is PairingState.Connected || message.sessionId != current.id) return
+        val messageId = message.messageId ?: return
+        if (!current.acceptMessageId(messageId)) return
+        val plaintext = Crypto.decrypt(
+            current.pairingKey!!,
+            message.nonce ?: return,
+            message.ciphertext ?: return,
+        ) ?: return
+        val payload = runCatching { JSONObject(plaintext.toString(Charsets.UTF_8)) }.getOrNull() ?: return
+        if (payload.optInt("version") != 1) return
+        val enabled = payload.optBoolean("enabled", false)
+        val updatedAt = payload.optLong("updatedAt", 0L)
+        if (updatedAt > settings.state.value.quietModeUpdatedAt) {
+            settings.setQuietModeEnabled(enabled, updatedAt)
         }
     }
 

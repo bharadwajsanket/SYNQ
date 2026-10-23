@@ -25,12 +25,13 @@ internal class QuickRequestSequence {
     }
 }
 
-internal fun validatedWebLink(value: String): String? {
-    val text = value.trim()
-    if (text.toByteArray(Charsets.UTF_8).size > 4096 || text.any { it.isWhitespace() || it.code < 32 || it == '\\' }) return null
-    val uri = runCatching { URI(text) }.getOrNull() ?: return null
-    return text.takeIf { uri.scheme?.lowercase() in setOf("https", "http") &&
-        !uri.host.isNullOrBlank() && uri.rawUserInfo == null && (uri.port == -1 || uri.port in 1..65535) }
+internal fun validatedWebLink(value: String): String? = SmartLinkDetector.validateSingleLink(value)
+
+internal fun formatQuickActionStatus(feature: String, accepted: Boolean): String {
+    return if (accepted) {
+        if (feature == "links") "Link sent to Mac" else "Media command completed"
+    } else if (feature == "media") "Player unavailable or busy — check Mac media settings and try again"
+    else "Link declined — check settings or dismiss the previous link"
 }
 
 data class MacMediaState(
@@ -54,6 +55,20 @@ class QuickActions(
     val media = mutableMedia.asStateFlow()
     private val pending = mutableMapOf<String, Pair<String, Job>>()
     private var sequence = 0L
+    private var lastNotifiedLink: String? = null
+    private var lastNotifiedTime: Long = 0L
+
+    @Synchronized
+    fun handleReceivedClipboardLink(link: String) {
+        val now = System.currentTimeMillis()
+        if (lastNotifiedLink == link && (now - lastNotifiedTime) < 60_000L) {
+            return
+        }
+        lastNotifiedLink = link
+        lastNotifiedTime = now
+        mutableLink.value = link
+        postLinkNotification(link, title = "Link from Mac")
+    }
 
     @Synchronized fun request(feature: SYNQFeature, action: String, value: String = "") {
         if (!available(feature)) { mutableStatus.value = "Feature is unavailable on one of your devices"; return }
@@ -104,10 +119,12 @@ class QuickActions(
                 val feature = payload.optString("feature")
                 if (pending[feature]?.first != payload.optString("requestId")) return
                 pending.remove(feature)?.second?.cancel()
-                mutableStatus.value = if (payload.opt("accepted") == true) {
-                    if (feature == "links") "Link delivered — waiting for the user to open it" else "Media command completed"
-                } else if (feature == "media") "Player unavailable or busy — check Mac media settings and try again"
-                else "Link declined — check settings or dismiss the previous link"
+                mutableStatus.value = formatQuickActionStatus(feature, payload.opt("accepted") == true)
+            }
+            "quick.event" -> {
+                if (payload.optString("feature") == "links" && payload.optString("event") == "opened") {
+                    mutableStatus.value = "Link opened on Mac"
+                }
             }
             "media.state" -> {
                 if (!available(SYNQFeature.MEDIA)) return
@@ -131,7 +148,17 @@ class QuickActions(
         if (!available(SYNQFeature.LINKS)) { dismissLink(); return }
         clearLinkNotification()
         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-            .onSuccess { mutableLink.value = null }
+            .onSuccess {
+                mutableLink.value = null
+                send(
+                    "quick.event",
+                    JSONObject()
+                        .put("version", 1)
+                        .put("requestId", UUID.randomUUID().toString())
+                        .put("feature", "links")
+                        .put("event", "opened")
+                )
+            }
             .onFailure { mutableStatus.value = "No browser available" }
     }
     fun dismissLink() {
@@ -139,22 +166,40 @@ class QuickActions(
         mutableLink.value = null
     }
 
-    private fun postLinkNotification(link: String) {
+    private fun postLinkNotification(link: String, title: String = "Webpage from Mac") {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
-        val openIntent = Intent(Intent.ACTION_VIEW, Uri.parse(link)).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        val pendingIntent = PendingIntent.getActivity(
+        val openPendingIntent = PendingIntent.getService(
             context,
             link.hashCode(),
-            openIntent,
+            Intent(context, SYNQConnectionService::class.java).setAction(SYNQConnectionService.ACTION_OPEN_LINK),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val dismissPendingIntent = PendingIntent.getService(
+            context,
+            link.hashCode() + 1,
+            Intent(context, SYNQConnectionService::class.java).setAction(SYNQConnectionService.ACTION_DISMISS_LINK),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val notification = Notification.Builder(context, "bridgey_clipboard_v2")
             .setSmallIcon(R.drawable.ic_synq_notification)
-            .setContentTitle("Webpage from Mac")
+            .setContentTitle(title)
             .setContentText(link)
-            .setContentIntent(pendingIntent)
+            .setContentIntent(openPendingIntent)
+            .addAction(
+                Notification.Action.Builder(
+                    android.R.drawable.ic_menu_view,
+                    "Open in browser",
+                    openPendingIntent
+                ).build()
+            )
+            .addAction(
+                Notification.Action.Builder(
+                    android.R.drawable.ic_menu_close_clear_cancel,
+                    "Dismiss",
+                    dismissPendingIntent
+                ).build()
+            )
+            .setDeleteIntent(dismissPendingIntent)
             .setAutoCancel(true)
             .build()
         nm.notify(LINK_NOTIFICATION_ID, notification)

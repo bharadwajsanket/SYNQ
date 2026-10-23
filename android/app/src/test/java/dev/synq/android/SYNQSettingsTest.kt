@@ -31,4 +31,34 @@ class SYNQSettingsTest {
         assertFalse(featureEnabledByLegacyPeer(SYNQFeature.PING))
         assertTrue(featureEnabledByLegacyPeer(SYNQFeature.BATTERY))
     }
+
+    @Test
+    fun quietModeStateMaintainsDefaults() {
+        val defaultState = SYNQSettingsState(
+            deviceName = "Android",
+            globalFeatures = emptyMap(),
+            deviceFeatures = emptyMap(),
+            notificationApplications = emptyMap(),
+            disabledNotificationPackages = emptySet(),
+            directCallsEnabled = false,
+        )
+        assertFalse(defaultState.quietModeEnabled)
+        org.junit.Assert.assertEquals(0L, defaultState.quietModeUpdatedAt)
+    }
+
+    @Test
+    fun quietModeCanBeToggledWithTimestamp() {
+        val state = SYNQSettingsState(
+            deviceName = "Android",
+            globalFeatures = emptyMap(),
+            deviceFeatures = emptyMap(),
+            notificationApplications = emptyMap(),
+            disabledNotificationPackages = emptySet(),
+            directCallsEnabled = false,
+            quietModeEnabled = true,
+            quietModeUpdatedAt = 12345L,
+        )
+        assertTrue(state.quietModeEnabled)
+        org.junit.Assert.assertEquals(12345L, state.quietModeUpdatedAt)
+    }
 }

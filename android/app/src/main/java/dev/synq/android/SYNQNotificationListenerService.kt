@@ -35,7 +35,10 @@ class SYNQNotificationListenerService : NotificationListenerService() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val pendingCallPosts = mutableMapOf<String, Runnable>()
     private val forwardedNotificationIds = mutableSetOf<String>()
+    private val forwardedCallNotificationIds = mutableSetOf<String>()
     private var telephonyCallback: TelephonyCallback? = null
+    @Suppress("DEPRECATION")
+    private var phoneStateListener: android.telephony.PhoneStateListener? = null
 
     override fun onDestroy() {
         unregisterTelephonyCallback()
@@ -106,15 +109,23 @@ class SYNQNotificationListenerService : NotificationListenerService() {
 
         synq.settings.observeNotificationApplication(sbn.packageName, applicationName)
         if (!synq.settings.isNotificationApplicationEnabled(sbn.packageName)) return
+        if (synq.settings.state.value.quietModeEnabled && !isCall) {
+            // Quiet Mode: suppress mirroring non-call notifications to Mac.
+            // Discard immediately to avoid notification flood when Quiet Mode ends.
+            return
+        }
         val applicationIcon = applicationIcon(sbn.packageName)
 
         val telephonyCallType = if (isCall) currentTelephonyCallType() else null
-        if (telephonyCallType == "idle") {
+        if (telephonyCallType == "idle" && !hasActiveCallSignals(notification)) {
             removeForwardedCall(sbn.key)
             return
         }
         val notificationId = notificationToken(sbn.key)
         forwardedNotifications.record(notificationId, sbn.key, sbn.packageName)
+        if (isCall) {
+            forwardedCallNotificationIds += notificationId
+        }
         pendingCallPosts.remove(notificationId)?.let(mainHandler::removeCallbacks)
         val callType = if (isCall) resolvedNotificationCallType(notification, telephonyCallType) else null
         val actions = storeActions(
@@ -209,6 +220,7 @@ class SYNQNotificationListenerService : NotificationListenerService() {
                 pendingIntent = pendingIntent,
                 remoteInputs = remoteInputs,
                 systemCallAction = action.systemCallAction,
+                title = title,
             )
             ForwardedNotificationAction(token = token, title = title, allowsReply = remoteInputs.isNotEmpty())
         }
@@ -253,8 +265,7 @@ class SYNQNotificationListenerService : NotificationListenerService() {
                 if (performSystemCallAction(action.systemCallAction)) {
                     true
                 } else if (action.pendingIntent != null) {
-                    action.pendingIntent.send()
-                    true
+                    runCatching { action.pendingIntent.send(); true }.getOrDefault(false)
                 } else {
                     false
                 }
@@ -267,10 +278,31 @@ class SYNQNotificationListenerService : NotificationListenerService() {
                 action.pendingIntent?.send(this, 0, fillInIntent)
                 true
             } else {
-                action.pendingIntent?.send()
-                true
+                if (action.pendingIntent != null) {
+                    runCatching { action.pendingIntent.send(); true }.getOrDefault(false)
+                } else {
+                    false
+                }
             }
-            if (succeeded) storedActions.remove(actionToken)
+            if (succeeded) {
+                storedActions.remove(actionToken)
+                if (action.systemCallAction == SystemCallAction.END ||
+                    action.title.contains("hang", ignoreCase = true) ||
+                    action.title.contains("decline", ignoreCase = true)
+                ) {
+                    val systemKey = forwardedNotifications.systemKey(notificationId)
+                    if (systemKey != null) {
+                        removeForwardedCall(systemKey)
+                    } else {
+                        forwardedCallNotificationIds.remove(notificationId)
+                        removeActions(notificationId)
+                        val synq = application as SYNQApplication
+                        if (forwardedNotificationIds.remove(notificationId) && synq.isPrimaryUser && synq.isSYNQEnabled) {
+                            synq.pairing.sendNotificationRemoved(notificationId)
+                        }
+                    }
+                }
+            }
             android.util.Log.i(
                 "SYNQ",
                 "PLUGIN notification action performed system=${action.systemCallAction != null} success=$succeeded",
@@ -310,24 +342,55 @@ class SYNQNotificationListenerService : NotificationListenerService() {
     private fun isCallIntegrationEnabled(): Boolean =
         (application as SYNQApplication).settings.state.value.directCallsEnabled
 
+    @Suppress("DEPRECATION")
     private fun updateTelephonyCallback() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
         unregisterTelephonyCallback()
         if (!isCallIntegrationEnabled()) return
         if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) return
-        val callback = SYNQCallStateCallback()
-        runCatching {
-            getSystemService(TelephonyManager::class.java).registerTelephonyCallback(mainExecutor, callback)
-            telephonyCallback = callback
-        }.onFailure { android.util.Log.w("SYNQ", "PLUGIN call-state listener registration failed", it) }
+        val telephony = getSystemService(TelephonyManager::class.java) ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val callback = SYNQCallStateCallback()
+            runCatching {
+                telephony.registerTelephonyCallback(mainExecutor, callback)
+                telephonyCallback = callback
+            }.onFailure { android.util.Log.w("SYNQ", "PLUGIN call-state listener registration failed", it) }
+        } else {
+            val listener = object : android.telephony.PhoneStateListener() {
+                override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+                    handleCallStateChanged(state)
+                }
+            }
+            runCatching {
+                telephony.listen(listener, android.telephony.PhoneStateListener.LISTEN_CALL_STATE)
+                phoneStateListener = listener
+            }.onFailure { android.util.Log.w("SYNQ", "PLUGIN legacy phone-state listener registration failed", it) }
+        }
     }
 
+    @Suppress("DEPRECATION")
     private fun unregisterTelephonyCallback() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
-        telephonyCallback?.let { callback ->
-            runCatching { getSystemService(TelephonyManager::class.java).unregisterTelephonyCallback(callback) }
+        val telephony = getSystemService(TelephonyManager::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            telephonyCallback?.let { callback ->
+                runCatching { telephony?.unregisterTelephonyCallback(callback) }
+            }
+            telephonyCallback = null
+        } else {
+            phoneStateListener?.let { listener ->
+                runCatching { telephony?.listen(listener, android.telephony.PhoneStateListener.LISTEN_NONE) }
+            }
+            phoneStateListener = null
         }
-        telephonyCallback = null
+    }
+
+    private fun handleCallStateChanged(state: Int) {
+        android.util.Log.d("SYNQ", "PLUGIN telephony state=${telephonyCallType(state) ?: "idle"}")
+        when (state) {
+            TelephonyManager.CALL_STATE_RINGING,
+            TelephonyManager.CALL_STATE_OFFHOOK,
+            -> refreshActiveCallNotifications()
+            TelephonyManager.CALL_STATE_IDLE -> removeActiveForwardedCalls()
+        }
     }
 
     private fun refreshActiveCallNotifications() {
@@ -341,10 +404,26 @@ class SYNQNotificationListenerService : NotificationListenerService() {
         activeNotifications.orEmpty()
             .filter { it.packageName != packageName && it.notification.category == Notification.CATEGORY_CALL }
             .forEach { removeForwardedCall(it.key) }
+        val remaining = forwardedCallNotificationIds.toList()
+        remaining.forEach { notificationId ->
+            val systemKey = forwardedNotifications.systemKey(notificationId)
+            if (systemKey != null) {
+                removeForwardedCall(systemKey)
+            } else {
+                forwardedCallNotificationIds.remove(notificationId)
+                pendingCallPosts.remove(notificationId)?.let(mainHandler::removeCallbacks)
+                removeActions(notificationId)
+                val synq = application as SYNQApplication
+                if (forwardedNotificationIds.remove(notificationId) && synq.isPrimaryUser && synq.isSYNQEnabled) {
+                    synq.pairing.sendNotificationRemoved(notificationId)
+                }
+            }
+        }
     }
 
     private fun removeForwardedCall(systemKey: String) {
         val notificationId = forwardedNotifications.removeSystemKey(systemKey) ?: return
+        forwardedCallNotificationIds.remove(notificationId)
         pendingCallPosts.remove(notificationId)?.let(mainHandler::removeCallbacks)
         removeActions(notificationId)
         val synq = application as SYNQApplication
@@ -358,15 +437,7 @@ class SYNQNotificationListenerService : NotificationListenerService() {
 
     @RequiresApi(Build.VERSION_CODES.S)
     private inner class SYNQCallStateCallback : TelephonyCallback(), TelephonyCallback.CallStateListener {
-        override fun onCallStateChanged(state: Int) {
-            android.util.Log.d("SYNQ", "PLUGIN telephony state=${telephonyCallType(state) ?: "idle"}")
-            when (state) {
-                TelephonyManager.CALL_STATE_RINGING,
-                TelephonyManager.CALL_STATE_OFFHOOK,
-                -> refreshActiveCallNotifications()
-                TelephonyManager.CALL_STATE_IDLE -> removeActiveForwardedCalls()
-            }
-        }
+        override fun onCallStateChanged(state: Int) = handleCallStateChanged(state)
     }
 
     companion object {
@@ -423,7 +494,7 @@ private fun notificationActionCandidates(
     canControlSystemCalls: Boolean,
 ): List<NotificationActionCandidate> {
     if (callType != null && canControlSystemCalls) {
-        return systemCallActionCandidates(callType, Build.VERSION.SDK_INT)
+        return systemCallActionCandidates(notification, callType, Build.VERSION.SDK_INT)
     }
     val candidates = notification.actions.orEmpty().mapNotNull { action ->
         val pendingIntent = action.actionIntent ?: return@mapNotNull null
@@ -500,13 +571,62 @@ internal fun systemCallActionTitles(callType: String, sdkInt: Int): List<String>
     else -> emptyList()
 }
 
-private fun systemCallActionCandidates(callType: String, sdkInt: Int): List<NotificationActionCandidate> =
-    systemCallActionTitles(callType, sdkInt).map { title ->
+private fun systemCallActionCandidates(
+    notification: Notification,
+    callType: String,
+    sdkInt: Int,
+): List<NotificationActionCandidate> {
+    val existingActions = notification.actions.orEmpty().mapNotNull { action ->
+        val pendingIntent = action.actionIntent ?: return@mapNotNull null
+        val title = action.title?.toString().orEmpty()
+        title to pendingIntent
+    }
+    val fallbackActions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        callStyleFallbackActions(callType).mapNotNull { fallback ->
+            notification.extras.pendingIntent(fallback.extraKey)?.let { fallback.title to it }
+        }
+    } else {
+        emptyList()
+    }
+    val allActions = existingActions + fallbackActions
+
+    return systemCallActionTitles(callType, sdkInt).map { title ->
+        val isAnswer = title == "Answer"
+        val matchedIntent = allActions.firstOrNull { (actionTitle, _) ->
+            if (isAnswer) {
+                actionTitle.contains("Answer", ignoreCase = true) || actionTitle.contains("Accept", ignoreCase = true)
+            } else {
+                actionTitle.contains("Decline", ignoreCase = true) ||
+                actionTitle.contains("Hang", ignoreCase = true) ||
+                actionTitle.contains("Reject", ignoreCase = true) ||
+                actionTitle.contains("End", ignoreCase = true) ||
+                actionTitle.contains("Dismiss", ignoreCase = true)
+            }
+        }?.second ?: if (isAnswer) {
+            notification.extras.pendingIntent(Notification.EXTRA_ANSWER_INTENT)
+        } else {
+            notification.extras.pendingIntent(Notification.EXTRA_DECLINE_INTENT)
+                ?: notification.extras.pendingIntent(Notification.EXTRA_HANG_UP_INTENT)
+        }
+
         NotificationActionCandidate(
             title = title,
-            systemCallAction = if (title == "Answer") SystemCallAction.ANSWER else SystemCallAction.END,
+            pendingIntent = matchedIntent,
+            systemCallAction = if (isAnswer) SystemCallAction.ANSWER else SystemCallAction.END,
         )
     }
+}
+
+internal fun hasActiveCallSignals(notification: Notification): Boolean {
+    if (notification.fullScreenIntent != null) return true
+    if (notification.actions.orEmpty().isNotEmpty()) return true
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        if (notification.extras.pendingIntent(Notification.EXTRA_ANSWER_INTENT) != null) return true
+        if (notification.extras.pendingIntent(Notification.EXTRA_DECLINE_INTENT) != null) return true
+        if (notification.extras.pendingIntent(Notification.EXTRA_HANG_UP_INTENT) != null) return true
+    }
+    return false
+}
 
 internal fun shouldDelayCallPost(callType: String?): Boolean = callType == "ongoing"
 
@@ -544,6 +664,7 @@ private data class StoredNotificationAction(
     val pendingIntent: PendingIntent?,
     val remoteInputs: Array<RemoteInput>,
     val systemCallAction: SystemCallAction?,
+    val title: String = "",
 )
 
 internal class ForwardedNotificationRegistry(private val limit: Int = 512) {

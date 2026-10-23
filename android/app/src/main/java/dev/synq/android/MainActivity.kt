@@ -12,8 +12,11 @@ import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.provider.ContactsContract
+import android.provider.DocumentsContract
 import android.provider.Settings
+import java.io.File
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -44,14 +47,25 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -490,11 +504,8 @@ private fun SYNQApp(
         },
         bottomBar = {
             NavigationBar(
-                modifier = Modifier
-                    .padding(horizontal = 16.dp, vertical = 10.dp)
-                    .clip(RoundedCornerShape(26.dp)),
                 containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                tonalElevation = 6.dp,
+                tonalElevation = 3.dp,
             ) {
                 NavDestination.entries.forEach { dest ->
                     val selected = currentDestination == dest
@@ -513,8 +524,15 @@ private fun SYNQApp(
                                 modifier = Modifier.size(24.dp)
                             )
                         },
-                        label = { Text(dest.label) },
+                        label = { Text(dest.label, style = MaterialTheme.typography.labelSmall) },
                         alwaysShowLabel = true,
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                            indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     )
                 }
             }
@@ -594,6 +612,9 @@ private fun SYNQApp(
                 onPruneUninstalled = { installedPackages ->
                     settings.pruneRemovedPackages(installedPackages)
                 },
+                onQuietModeToggled = { enabled ->
+                    settings.setQuietModeEnabled(enabled)
+                },
                 modifier = Modifier.padding(padding),
             )
             NavDestination.SETTINGS -> SettingsScreen(
@@ -605,6 +626,12 @@ private fun SYNQApp(
                 onDeviceNameChanged = onDeviceNameChanged,
                 onThemeModeChanged = settings::setThemeMode,
                 onOtpAssistanceChanged = settings::setOtpAssistanceEnabled,
+                onQuietModeChanged = { enabled ->
+                    settings.setQuietModeEnabled(enabled)
+                },
+                onFileBrowsingChanged = settings::setFileBrowsingEnabled,
+                onCustomBrowsingPathChanged = settings::setCustomBrowsingPath,
+                onNavigateToDevices = { currentDestination = NavDestination.DEVICES },
                 onGlobalFeatureChanged = { feature, enabled ->
                     settings.setGlobal(feature, enabled)
                     if (feature == SYNQFeature.FIND_DEVICE && !enabled) pairing.stopFinding()
@@ -903,26 +930,123 @@ private fun HomeScreen(
                                 }
                             }
 
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedButton(
+                            if (phoneRinging || macRinging) {
+                                Button(
                                     onClick = {
                                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        if (phoneRinging || macRinging) pairing.stopFinding() else pairing.findMac()
+                                        pairing.stopFinding()
                                     },
-                                    enabled = enabledFeatures[SYNQFeature.FIND_DEVICE] != false,
-                                    modifier = Modifier.weight(1f)
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Text(if (phoneRinging || macRinging) "Stop Ring" else "Ring Mac")
+                                    Text("Stop Ringing")
                                 }
-                                OutlinedButton(
-                                    onClick = {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        pairing.sendPing()
-                                    },
-                                    enabled = enabledFeatures[SYNQFeature.PING] != false,
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text("Ping Mac")
+                            } else {
+                                val findAvailable = enabledFeatures[SYNQFeature.FIND_DEVICE] != false
+                                val pingAvailable = enabledFeatures[SYNQFeature.PING] != false
+                                if (findAvailable && pingAvailable) {
+                                    var showFindMenu by remember { mutableStateOf(false) }
+                                    Box(modifier = Modifier.fillMaxWidth()) {
+                                        OutlinedButton(
+                                            onClick = { showFindMenu = true },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(12.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Notifications,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(Modifier.width(8.dp))
+                                            Text("Find Mac", fontWeight = FontWeight.Medium)
+                                            Spacer(Modifier.weight(1f))
+                                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                                        }
+                                        DropdownMenu(
+                                            expanded = showFindMenu,
+                                            onDismissRequest = { showFindMenu = false },
+                                            shape = RoundedCornerShape(16.dp),
+                                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                            modifier = Modifier.padding(horizontal = 4.dp)
+                                        ) {
+                                            DropdownMenuItem(
+                                                leadingIcon = {
+                                                    Icon(
+                                                        Icons.Default.Notifications,
+                                                        contentDescription = null,
+                                                        tint = MaterialTheme.colorScheme.primary,
+                                                        modifier = Modifier.size(20.dp)
+                                                    )
+                                                },
+                                                text = {
+                                                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                                        Text("Ring Mac", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                                                        Text(
+                                                            "Continuous alarm on Mac",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                },
+                                                onClick = {
+                                                    showFindMenu = false
+                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                    pairing.findMac()
+                                                },
+                                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
+                                            )
+                                            HorizontalDivider(
+                                                modifier = Modifier.padding(horizontal = 12.dp),
+                                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                                            )
+                                            DropdownMenuItem(
+                                                leadingIcon = {
+                                                    Icon(
+                                                        Icons.Default.PlayArrow,
+                                                        contentDescription = null,
+                                                        tint = MaterialTheme.colorScheme.primary,
+                                                        modifier = Modifier.size(20.dp)
+                                                    )
+                                                },
+                                                text = {
+                                                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                                        Text("Ping Mac", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                                                        Text(
+                                                            "Quick audio alert",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                },
+                                                onClick = {
+                                                    showFindMenu = false
+                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                    pairing.sendPing()
+                                                },
+                                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
+                                            )
+                                        }
+                                    }
+                                } else if (findAvailable) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            pairing.findMac()
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("Ring Mac")
+                                    }
+                                } else if (pingAvailable) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            pairing.sendPing()
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("Ping Mac")
+                                    }
                                 }
                             }
                         }
@@ -1191,6 +1315,7 @@ private fun NotificationsScreen(
     onMasterToggled: (Boolean) -> Unit,
     onApplicationToggled: (String, Boolean) -> Unit,
     onPruneUninstalled: (Set<String>) -> Unit,
+    onQuietModeToggled: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -1285,6 +1410,18 @@ private fun NotificationsScreen(
                         Text("Forward notifications to Mac", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Switch(checked = isMasterEnabled, onCheckedChange = onMasterToggled)
+                }
+            }
+        }
+
+        item {
+            Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Quiet Mode", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
+                        Text("Silence notification mirroring to Mac without disconnecting. Calls still alert normally.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = state.quietModeEnabled, onCheckedChange = onQuietModeToggled)
                 }
             }
         }
@@ -1408,12 +1545,40 @@ private fun SettingsScreen(
     onRemoveFavouriteContact: (String) -> Unit,
     onPickContact: () -> Unit,
     onTurnOff: () -> Unit,
+    onQuietModeChanged: (Boolean) -> Unit = {},
+    onFileBrowsingChanged: (Boolean) -> Unit = {},
+    onCustomBrowsingPathChanged: (String?) -> Unit = {},
+    onNavigateToDevices: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+            val resolved = resolveTreeUriToPath(uri)
+            if (resolved != null) {
+                onCustomBrowsingPathChanged(resolved)
+            }
+        }
+    }
     var editedName by remember(state.deviceName) { mutableStateOf(state.deviceName) }
     var showAddFavouriteDialog by remember { mutableStateOf(false) }
     var newFavouriteName by remember { mutableStateOf("") }
     var newFavouriteNumber by remember { mutableStateOf("") }
+    var showPermissionsPage by rememberSaveable { mutableStateOf(false) }
+
+    if (showPermissionsPage) {
+        PermissionsScreen(
+            onBack = { showPermissionsPage = false },
+            modifier = modifier
+        )
+        return
+    }
 
     if (showAddFavouriteDialog) {
         AlertDialog(
@@ -1485,15 +1650,15 @@ private fun SettingsScreen(
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 96.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        // 1. Appearance / Theme
+        // 1. Appearance
         item { SectionTitle("Appearance") }
         item {
             Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Theme mode", fontWeight = FontWeight.SemiBold)
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Text("Theme mode", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
                     listOf("system" to "System default", "light" to "Light", "dark" to "Dark").forEach { (mode, label) ->
                         Row(
                             Modifier.fillMaxWidth().clickable { onThemeModeChanged(mode) },
@@ -1506,15 +1671,8 @@ private fun SettingsScreen(
                             Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 8.dp))
                         }
                     }
-                }
-            }
-        }
-
-        // 2. Device Name
-        item { SectionTitle("Device identity") }
-        item {
-            Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    Text("Device name", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
                     OutlinedTextField(
                         value = editedName,
                         onValueChange = { editedName = it.take(64) },
@@ -1523,44 +1681,195 @@ private fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp)
                     )
-                    Button(
-                        onClick = { onDeviceNameChanged(editedName) },
-                        enabled = editedName.trim().isNotEmpty() && editedName.trim() != state.deviceName,
-                    ) { Text("Save name") }
+                    if (editedName.trim().isNotEmpty() && editedName.trim() != state.deviceName) {
+                        Button(
+                            onClick = { onDeviceNameChanged(editedName) },
+                            shape = RoundedCornerShape(12.dp)
+                        ) { Text("Save name") }
+                    }
                 }
             }
         }
 
-        // 3. Features
-        item { SectionTitle("Connected features") }
+        // 2. Connection & Devices
+        item { SectionTitle("Connection & Devices") }
         item {
-            FeatureToggle("Clipboard sync", state.globalFeatures[SYNQFeature.CLIPBOARD] != false) {
-                onGlobalFeatureChanged(SYNQFeature.CLIPBOARD, it)
+            Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(18.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            if (trustedDevices.isEmpty()) "No paired computers" else "${trustedDevices.size} paired computer${if (trustedDevices.size > 1) "s" else ""}",
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        Text(
+                            "Manage pairings, connect, or forget computers in the Devices tab.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Button(onClick = onNavigateToDevices, shape = RoundedCornerShape(12.dp)) {
+                        Text("View")
+                    }
+                }
             }
         }
+
+        // 3. Notifications
+        item { SectionTitle("Notifications") }
         item {
-            FeatureToggle("File transfer", state.globalFeatures[SYNQFeature.FILES] != false) {
-                onGlobalFeatureChanged(SYNQFeature.FILES, it)
+            Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+                Column {
+                    SettingToggleRow(
+                        title = "Quiet Mode",
+                        subtitle = "Silence forwarded SYNQ notifications on this device",
+                        checked = state.quietModeEnabled,
+                        onCheckedChange = onQuietModeChanged,
+                    )
+                    HorizontalDivider(Modifier.padding(horizontal = 18.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    SettingToggleRow(
+                        title = "Notification forwarding",
+                        subtitle = "Forward incoming phone notifications securely to your Mac",
+                        checked = state.globalFeatures[SYNQFeature.NOTIFICATIONS] != false,
+                        onCheckedChange = { onGlobalFeatureChanged(SYNQFeature.NOTIFICATIONS, it) },
+                    )
+                }
             }
         }
+
+        // 4. Features
+        item { SectionTitle("Features") }
         item {
-            FeatureToggle("Web link handoff", state.globalFeatures[SYNQFeature.LINKS] != false) {
-                onGlobalFeatureChanged(SYNQFeature.LINKS, it)
+            Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+                Column {
+                    SettingToggleRow(
+                        title = "Clipboard sync",
+                        subtitle = "Keep copied text synchronized between devices",
+                        checked = state.globalFeatures[SYNQFeature.CLIPBOARD] != false,
+                        onCheckedChange = { onGlobalFeatureChanged(SYNQFeature.CLIPBOARD, it) },
+                    )
+                    HorizontalDivider(Modifier.padding(horizontal = 18.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    SettingToggleRow(
+                        title = "File transfer",
+                        subtitle = "Send and receive files directly with your Mac",
+                        checked = state.globalFeatures[SYNQFeature.FILES] != false,
+                        onCheckedChange = { onGlobalFeatureChanged(SYNQFeature.FILES, it) },
+                    )
+                    HorizontalDivider(Modifier.padding(horizontal = 18.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    SettingToggleRow(
+                        title = "Web link handoff",
+                        subtitle = "Share open links between your phone and Mac",
+                        checked = state.globalFeatures[SYNQFeature.LINKS] != false,
+                        onCheckedChange = { onGlobalFeatureChanged(SYNQFeature.LINKS, it) },
+                    )
+                    HorizontalDivider(Modifier.padding(horizontal = 18.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    SettingToggleRow(
+                        title = "Mac media controls",
+                        subtitle = "See now playing and control playback from phone",
+                        checked = state.globalFeatures[SYNQFeature.MEDIA] != false,
+                        onCheckedChange = { onGlobalFeatureChanged(SYNQFeature.MEDIA, it) },
+                    )
+                    HorizontalDivider(Modifier.padding(horizontal = 18.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    SettingToggleRow(
+                        title = "OTP Assistance",
+                        subtitle = "Forward incoming 2FA verification codes to your Mac",
+                        checked = state.otpAssistanceEnabled,
+                        onCheckedChange = onOtpAssistanceChanged,
+                    )
+                }
             }
         }
+
+        // 5. Privacy & Storage
+        item { SectionTitle("Privacy & Storage") }
         item {
-            FeatureToggle("Mac media controls", state.globalFeatures[SYNQFeature.MEDIA] != false) {
-                onGlobalFeatureChanged(SYNQFeature.MEDIA, it)
+            Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("Remote file browsing", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "Allow paired Mac to browse and download files from authorized storage.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = state.fileBrowsingEnabled,
+                            onCheckedChange = onFileBrowsingChanged,
+                        )
+                    }
+
+                    if (state.fileBrowsingEnabled) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text("Authorized directory", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    state.customBrowsingPath ?: "Default: Downloads folder (${Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).path})",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { folderPicker.launch(null) },
+                                shape = RoundedCornerShape(12.dp),
+                            ) {
+                                Text("Choose folder…")
+                            }
+                            if (state.customBrowsingPath != null) {
+                                OutlinedButton(
+                                    onClick = { onCustomBrowsingPathChanged(null) },
+                                    shape = RoundedCornerShape(12.dp),
+                                ) {
+                                    Text("Reset to Downloads")
+                                }
+                            }
+                        }
+                    } else {
+                        Text(
+                            "Browsing is disabled. Remote list and download requests from Mac are rejected.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
             }
         }
+
+        // 6. Contacts & Calling
+        item { SectionTitle("Contacts & Calling") }
         item {
-            FeatureToggle("Direct phone calls", state.directCallsEnabled) {
-                onDirectCallsChanged(it)
-            }
-        }
-        item {
-            FeatureToggle("Contacts sync", state.contactsSyncEnabled) {
-                onContactsSyncChanged(it)
+            Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+                Column {
+                    SettingToggleRow(
+                        title = "Direct phone calls",
+                        subtitle = "Control and answer phone calls from your Mac",
+                        checked = state.directCallsEnabled,
+                        onCheckedChange = onDirectCallsChanged,
+                    )
+                    HorizontalDivider(Modifier.padding(horizontal = 18.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    SettingToggleRow(
+                        title = "Contacts sync",
+                        subtitle = "Sync contacts with your Mac for quick dialing",
+                        checked = state.contactsSyncEnabled,
+                        onCheckedChange = onContactsSyncChanged,
+                    )
+                }
             }
         }
         item {
@@ -1571,9 +1880,6 @@ private fun SettingsScreen(
                 onEnableSync = { onContactsSyncChanged(true) },
             )
         }
-
-        // Favourite Contacts Section
-        item { SectionTitle("Favourite contacts") }
         item {
             Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1648,42 +1954,46 @@ private fun SettingsScreen(
             }
         }
 
-        // 4. OTP Assistance
-        item { SectionTitle("Verification & OTP") }
+        // 7. About & Service
+        item { SectionTitle("About & Service") }
         item {
             Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("OTP Assistance", fontWeight = FontWeight.SemiBold)
-                            Text(
-                                "Detect one-time verification codes in incoming notifications and deliver them directly to your Mac. Never saved to disk; expires in 3 minutes.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = state.otpAssistanceEnabled,
-                            onCheckedChange = onOtpAssistanceChanged
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "SYNQ",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            "v2.5.4",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                }
-            }
-        }
-
-        // 5. Privacy & Service
-        item { SectionTitle("Service & Privacy") }
-        item {
-            Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
                         "SYNQ communicates locally and directly with your Mac. No accounts, external servers, analytics, or third-party relays are used.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     OutlinedButton(
+                        onClick = { showPermissionsPage = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Permissions & Privacy Overview")
+                    }
+                    OutlinedButton(
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                        onClick = onTurnOff
+                        onClick = onTurnOff,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
                     ) {
                         Text("Turn off SYNQ")
                     }
@@ -1691,7 +2001,251 @@ private fun SettingsScreen(
             }
         }
 
+        item {
+            val uriHandler = LocalUriHandler.current
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 18.dp, bottom = 4.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Made with ♥ by Sanket",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable {
+                            uriHandler.openUri("https://github.com/bharadwajsanket")
+                        }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                )
+            }
+        }
+
         item { Spacer(Modifier.height(16.dp)) }
+    }
+}
+
+@Composable
+private fun PermissionsScreen(
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val permissions = remember {
+        listOf(
+            SynqPermissionInfo(
+                name = "Local Network & Multicast",
+                technical = "INTERNET, CHANGE_WIFI_MULTICAST_STATE",
+                isRequired = true,
+                feature = "Device Discovery & Secure Link",
+                description = "Discovers your Mac on the local Wi-Fi using Bonjour/mDNS and establishes direct TLS-encrypted peer-to-peer communication. SYNQ never contacts external cloud servers or relays."
+            ),
+            SynqPermissionInfo(
+                name = "Notifications",
+                technical = "POST_NOTIFICATIONS",
+                isRequired = true,
+                feature = "Foreground Service & Alerts",
+                description = "Required on Android 13+ to maintain the background connection service, show active transfer status, and play the Find Device alert."
+            ),
+            SynqPermissionInfo(
+                name = "Notification Listener",
+                technical = "BIND_NOTIFICATION_LISTENER_SERVICE",
+                isRequired = false,
+                feature = "Notification Forwarding & OTP",
+                description = "Mirrors selected phone notifications to your Mac and detects temporary one-time verification codes for easy copying. Handled entirely on your local devices."
+            ),
+            SynqPermissionInfo(
+                name = "Phone Calls",
+                technical = "CALL_PHONE, READ_PHONE_STATE, ANSWER_PHONE_CALLS",
+                isRequired = false,
+                feature = "Call from Mac",
+                description = "Places phone calls dialed from your Mac, manages call audio, and provides call-in-progress controls from your Mac's menu bar."
+            ),
+            SynqPermissionInfo(
+                name = "Contacts",
+                technical = "READ_CONTACTS",
+                isRequired = false,
+                feature = "Contact Sync & Quick Dial",
+                description = "Synchronizes your favourite phone contacts with your Mac so you can dial friends and family with a single tap. Contacts remain private to your paired devices."
+            ),
+            SynqPermissionInfo(
+                name = "SMS Messaging",
+                technical = "SEND_SMS",
+                isRequired = false,
+                feature = "Quick SMS from Mac",
+                description = "Enables composing and sending SMS messages from your Mac through your phone's cellular connection without third-party services."
+            ),
+            SynqPermissionInfo(
+                name = "Storage & Documents",
+                technical = "Storage Access Framework",
+                isRequired = false,
+                feature = "File Transfer & Browsing",
+                description = "Allows browsing designated phone folders from your Mac and saving files transferred wirelessly between your devices."
+            )
+        )
+    }
+
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp)
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Settings")
+                }
+                Spacer(Modifier.width(4.dp))
+                Column {
+                    Text(
+                        "Permissions",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "How SYNQ respects and protects your privacy",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        item {
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Privacy & Security Commitment", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "SYNQ operates strictly peer-to-peer over your local encrypted network. There are no user accounts, no cloud servers, and zero data collection. Optional permissions are only used when you enable the corresponding feature.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        items(permissions) { info ->
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            info.name,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (info.isRequired) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer
+                        ) {
+                            Text(
+                                text = if (info.isRequired) "Required" else "Optional",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (info.isRequired) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = "Feature: ${info.feature}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+
+                    Text(
+                        text = info.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Text(
+                        text = info.technical,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                }
+            }
+        }
+
+        item {
+            OutlinedButton(
+                onClick = {
+                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.fromParts("package", context.packageName, null)
+                    }
+                    context.startActivity(intent)
+                },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Text("Manage System Permissions")
+            }
+        }
+
+        item { Spacer(Modifier.height(80.dp)) }
+    }
+}
+
+private data class SynqPermissionInfo(
+    val name: String,
+    val technical: String,
+    val isRequired: Boolean,
+    val feature: String,
+    val description: String,
+)
+
+@Composable
+private fun SettingToggleRow(
+    title: String,
+    subtitle: String? = null,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) }
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column(Modifier.weight(1f).padding(end = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, fontWeight = FontWeight.Medium, style = MaterialTheme.typography.bodyLarge)
+            if (subtitle != null) {
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 
@@ -1870,3 +2424,30 @@ private fun ServiceCard(enabled: Boolean, title: String, detail: String, action:
 
 @Composable
 private fun SectionTitle(value: String) = Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+
+private fun resolveTreeUriToPath(uri: Uri): String? {
+    return try {
+        val docId = DocumentsContract.getTreeDocumentId(uri)
+        if (docId.startsWith("primary:")) {
+            val relPath = docId.removePrefix("primary:")
+            File(Environment.getExternalStorageDirectory(), relPath).canonicalPath
+        } else {
+            val parts = docId.split(":")
+            if (parts.size >= 2) {
+                val volumeId = parts[0]
+                val relPath = parts[1]
+                val storageDir = File("/storage/$volumeId")
+                if (storageDir.exists()) {
+                    File(storageDir, relPath).canonicalPath
+                } else {
+                    File(Environment.getExternalStorageDirectory(), relPath).canonicalPath
+                }
+            } else {
+                null
+            }
+        }
+    } catch (_: Exception) {
+        null
+    }
+}
+

@@ -54,3 +54,23 @@ func recoverInterruptedTransfers(_ transfers: [String: FileTransferRow]) -> [Str
         .prefix(maximumTransferHistory)
         .map { ($0.id, $0) })
 }
+
+let secondaryInitiatorFallbackDelay: TimeInterval = 4.0
+
+func shouldInitiateConnectionImmediately(localDeviceID: String, remoteDeviceID: String) -> Bool {
+    localDeviceID.lowercased() < remoteDeviceID.lowercased()
+}
+
+func resolveConnectionEndpoint(
+    discoveredPeers: [DiscoveredPeer],
+    trustedDeviceIDs: Set<String>,
+    lastTrustedEndpoint: (host: String, port: Int, name: String)?
+) -> (host: String, port: Int, name: String)? {
+    if let peer = discoveredPeers.first(where: {
+        guard let id = $0.deviceIDHint?.lowercased() else { return false }
+        return trustedDeviceIDs.contains(id) && $0.host != nil && $0.port != nil
+    }), let host = peer.host, let port = peer.port {
+        return (host, port, peer.deviceNameHint)
+    }
+    return lastTrustedEndpoint
+}

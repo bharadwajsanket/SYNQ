@@ -64,4 +64,29 @@ final class QuickActionsTests: XCTestCase {
         XCTAssertFalse(featureEnabledByLegacyPeer(.links))
         XCTAssertFalse(featureEnabledByLegacyPeer(.media))
     }
+
+    @MainActor func testSmartLinkNeutralDeliveredStatusAndOpenedEvent() {
+        let actions = QuickActions()
+        actions.available = { _ in true }
+        let pendingId = UUID().uuidString.lowercased()
+        actions.pending = pendingId
+
+        // 1. Android accepts link offer
+        actions.receive("quick.result", payload: [
+            "version": 1,
+            "requestId": pendingId,
+            "feature": "links",
+            "accepted": true
+        ])
+        XCTAssertEqual(actions.status, "Link sent to Android")
+
+        // 2. Android reports that the link was opened
+        actions.receive("quick.event", payload: [
+            "version": 1,
+            "requestId": UUID().uuidString.lowercased(),
+            "feature": "links",
+            "event": "opened"
+        ])
+        XCTAssertEqual(actions.status, "Link opened on Android")
+    }
 }

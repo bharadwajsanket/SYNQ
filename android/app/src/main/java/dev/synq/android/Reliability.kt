@@ -58,3 +58,8 @@ internal fun recoverInterruptedTransfers(
     .sortedByDescending(FileTransferState::startedAtMillis)
     .take(MAX_TRANSFER_HISTORY)
     .associateBy(FileTransferState::id)
+
+internal const val SECONDARY_INITIATOR_FALLBACK_DELAY_MILLIS = 4_000L
+
+internal fun shouldInitiateConnectionImmediately(localDeviceId: String, remoteDeviceId: String): Boolean =
+    localDeviceId.lowercase() < remoteDeviceId.lowercase()

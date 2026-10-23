@@ -43,6 +43,10 @@ data class SYNQSettingsState(
     val favouriteContacts: List<ContactItem> = emptyList(),
     val lastContactsSyncAtMillis: Long? = null,
     val lastContactsSyncCount: Int? = null,
+    val quietModeEnabled: Boolean = false,
+    val quietModeUpdatedAt: Long = 0L,
+    val fileBrowsingEnabled: Boolean = true,
+    val customBrowsingPath: String? = null,
 )
 
 internal fun effectiveFeatureEnabled(
@@ -150,6 +154,22 @@ class SYNQSettings(context: Context, defaultDeviceName: String) {
         mutableState.value = mutableState.value.copy(otpAssistanceEnabled = enabled)
     }
 
+    fun setFileBrowsingEnabled(enabled: Boolean) {
+        preferences.edit().putBoolean(KEY_FILE_BROWSING_ENABLED, enabled).apply()
+        mutableState.value = mutableState.value.copy(fileBrowsingEnabled = enabled)
+    }
+
+    fun setCustomBrowsingPath(path: String?) {
+        val editor = preferences.edit()
+        if (path.isNullOrBlank()) {
+            editor.remove(KEY_CUSTOM_BROWSING_PATH)
+        } else {
+            editor.putString(KEY_CUSTOM_BROWSING_PATH, path.trim())
+        }
+        editor.apply()
+        mutableState.value = mutableState.value.copy(customBrowsingPath = path?.trim()?.ifBlank { null })
+    }
+
     fun removeDevice(deviceId: String) {
         val editor = preferences.edit()
         SYNQFeature.entries.forEach { editor.remove("device.$deviceId.${it.key}") }
@@ -160,6 +180,17 @@ class SYNQSettings(context: Context, defaultDeviceName: String) {
     fun setContactsSyncEnabled(enabled: Boolean) {
         preferences.edit().putBoolean(KEY_CONTACTS_SYNC_ENABLED, enabled).apply()
         mutableState.value = mutableState.value.copy(contactsSyncEnabled = enabled)
+    }
+
+    fun setQuietModeEnabled(enabled: Boolean, updatedAt: Long = System.currentTimeMillis()) {
+        preferences.edit()
+            .putBoolean(KEY_QUIET_MODE_ENABLED, enabled)
+            .putLong(KEY_QUIET_MODE_UPDATED_AT, updatedAt)
+            .apply()
+        mutableState.value = mutableState.value.copy(
+            quietModeEnabled = enabled,
+            quietModeUpdatedAt = updatedAt,
+        )
     }
 
     fun recordContactsSync(count: Int) {
@@ -272,6 +303,10 @@ class SYNQSettings(context: Context, defaultDeviceName: String) {
             favouriteContacts = safeFavourites,
             lastContactsSyncAtMillis = preferences.getLong(KEY_LAST_CONTACTS_SYNC_AT, 0L).takeIf { it > 0L },
             lastContactsSyncCount = preferences.getInt(KEY_LAST_CONTACTS_SYNC_COUNT, -1).takeIf { it >= 0 },
+            quietModeEnabled = preferences.getBoolean(KEY_QUIET_MODE_ENABLED, false),
+            quietModeUpdatedAt = preferences.getLong(KEY_QUIET_MODE_UPDATED_AT, 0L),
+            fileBrowsingEnabled = preferences.getBoolean(KEY_FILE_BROWSING_ENABLED, true),
+            customBrowsingPath = preferences.getString(KEY_CUSTOM_BROWSING_PATH, null),
         )
     }
 
@@ -296,5 +331,9 @@ class SYNQSettings(context: Context, defaultDeviceName: String) {
         private const val KEY_FAVOURITE_CONTACTS = "favourite_contacts"
         private const val KEY_LAST_CONTACTS_SYNC_AT = "contacts_sync_at"
         private const val KEY_LAST_CONTACTS_SYNC_COUNT = "contacts_sync_count"
+        private const val KEY_QUIET_MODE_ENABLED = "quiet_mode.enabled"
+        private const val KEY_QUIET_MODE_UPDATED_AT = "quiet_mode.updated_at"
+        private const val KEY_FILE_BROWSING_ENABLED = "files.browsing_enabled"
+        private const val KEY_CUSTOM_BROWSING_PATH = "files.custom_browsing_path"
     }
 }

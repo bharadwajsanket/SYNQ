@@ -39,4 +39,30 @@ final class NotificationCallTests: XCTestCase {
         XCTAssertEqual(orderedCallActions([hangUp]), [hangUp])
         XCTAssertEqual(orderedCallActions([decline, answer, hangUp]), [answer, hangUp, decline])
     }
+
+    func testRecognizesCallEndingActionTitles() {
+        XCTAssertTrue(isCallEndingActionTitle("Decline"))
+        XCTAssertTrue(isCallEndingActionTitle("Hang Up"))
+        XCTAssertTrue(isCallEndingActionTitle("Reject"))
+        XCTAssertTrue(isCallEndingActionTitle("End call"))
+        XCTAssertTrue(isCallEndingActionTitle("HANG UP"))
+        XCTAssertFalse(isCallEndingActionTitle("Answer"))
+        XCTAssertFalse(isCallEndingActionTitle("Accept"))
+        XCTAssertFalse(isCallEndingActionTitle("Reply with message"))
+    }
+
+    func testQuietModeSuppressionRules() {
+        // Under Quiet Mode, regular notifications (callType == nil) are suppressed from mirroring
+        XCTAssertTrue(shouldSuppressNotificationInQuietMode(quietModeEnabled: true, callType: nil))
+        // When Quiet Mode is off, regular notifications are NOT suppressed
+        XCTAssertFalse(shouldSuppressNotificationInQuietMode(quietModeEnabled: false, callType: nil))
+
+        // Phone calls (incoming, ongoing, screening) must NEVER be suppressed by Quiet Mode
+        XCTAssertFalse(shouldSuppressNotificationInQuietMode(quietModeEnabled: true, callType: "incoming"))
+        XCTAssertFalse(shouldSuppressNotificationInQuietMode(quietModeEnabled: true, callType: "ongoing"))
+        XCTAssertFalse(shouldSuppressNotificationInQuietMode(quietModeEnabled: true, callType: "screening"))
+        XCTAssertFalse(shouldSuppressNotificationInQuietMode(quietModeEnabled: true, callType: "unknown"))
+
+        XCTAssertFalse(shouldSuppressNotificationInQuietMode(quietModeEnabled: false, callType: "incoming"))
+    }
 }

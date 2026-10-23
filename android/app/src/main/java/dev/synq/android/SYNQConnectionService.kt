@@ -252,6 +252,14 @@ class SYNQConnectionService : Service() {
             notificationManager.cancel(FIND_NOTIFICATION_ID)
             return START_STICKY
         }
+        if (intent?.action == ACTION_OPEN_LINK) {
+            (application as SYNQApplication).pairing.quickActions.openLink()
+            return START_STICKY
+        }
+        if (intent?.action == ACTION_DISMISS_LINK) {
+            (application as SYNQApplication).pairing.quickActions.dismissLink()
+            return START_STICKY
+        }
         // Re-post even when the service is already alive: Android 13+ and some
         // Samsung builds allow users to dismiss foreground-service cards.
         startForeground(NOTIFICATION_ID, buildNotification(lastStatus))
@@ -274,6 +282,8 @@ class SYNQConnectionService : Service() {
         const val ACTION_TURN_OFF = "dev.synq.android.TURN_OFF"
         private const val ACTION_CANCEL_TRANSFER = "dev.synq.android.CANCEL_TRANSFER"
         private const val ACTION_STOP_FINDING = "dev.synq.android.STOP_FINDING"
+        const val ACTION_OPEN_LINK = "dev.synq.android.OPEN_LINK"
+        const val ACTION_DISMISS_LINK = "dev.synq.android.DISMISS_LINK"
         private const val EXTRA_TRANSFER_ID = "dev.synq.android.extra.TRANSFER_ID"
     }
 }

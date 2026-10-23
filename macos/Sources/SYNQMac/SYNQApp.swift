@@ -193,6 +193,9 @@ struct SYNQApp: App {
         _discovery = StateObject(wrappedValue: discovery)
         let pairing = PairingCoordinator(deviceID: discovery.localDeviceID, deviceName: discovery.localDeviceName, settings: settings)
         pairing.observe(discovery)
+        discovery.onNetworkPathChanged = { [weak pairing] in
+            pairing?.networkPathChanged()
+        }
         _pairing = StateObject(wrappedValue: pairing)
         let favourites = FavouriteContactsStore()
         _favourites = StateObject(wrappedValue: favourites)
@@ -286,6 +289,9 @@ private struct SYNQPanel: View {
                         onDial: { pairing.sendCall($0) },
                         onManualDial: { pairing.sendCallFromClipboard() },
                         onSyncContacts: { pairing.requestContactsSync() },
+                        onSendSMS: { recipient, body, completion in
+                            pairing.sendSMS(recipient: recipient, body: body, completion: completion)
+                        },
                         onClose: { withAnimation(.easeInOut(duration: 0.18)) { screen = .home } }
                     )
                     .transition(.opacity)
@@ -354,6 +360,20 @@ private struct SYNQPanel: View {
                     Text(headerSubtitle).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                if settings.quietModeEnabled {
+                    HStack(spacing: 4) {
+                        Image(systemName: "moon.fill")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text("Quiet")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color.secondary.opacity(0.15))
+                    .clipShape(Capsule())
+                    .foregroundStyle(.secondary)
+                    .help("Quiet Mode is active")
+                }
                 Circle()
                     .fill(isConnected ? Color.green : Color.secondary.opacity(0.45))
                     .frame(width: 8, height: 8)
@@ -384,10 +404,10 @@ private struct SYNQPanel: View {
             }
 
             Divider().padding(.top, 10)
-            HStack(spacing: 7) {
-                footerPill("Settings", icon: "gearshape", action: onOpenSettings)
+            HStack(spacing: 8) {
+                footerButton("Settings", icon: "gearshape", action: onOpenSettings)
                     .help("Settings")
-                footerPill("Guest Share", icon: "person.crop.circle.badge.plus") {
+                footerButton("Guest Share", icon: "person.crop.circle.badge.plus") {
                     if !pairing.guestTransferManager.isSessionActive {
                         pairing.guestTransferManager.startSession()
                     }
@@ -395,7 +415,7 @@ private struct SYNQPanel: View {
                     withAnimation(.easeInOut(duration: 0.18)) { screen = .guest }
                 }
                 .help("Receive files from nearby guests via QR code")
-                footerPill("Quit", icon: "power", isDestructive: true) {
+                footerButton("Quit", icon: "power", isDestructive: true) {
                     NSApplication.shared.terminate(nil)
                 }
                 .help("Quit SYNQ")
@@ -501,6 +521,7 @@ private struct SYNQPanel: View {
                                 ForEach(Array(call.actions.prefix(3))) { action in
                                     Button(action.title) { pairing.performRemoteCallAction(action) }
                                         .buttonStyle(.bordered)
+                                        .disabled(pairing.inFlightCallActionToken != nil)
                                         .lineLimit(1)
                                         .frame(maxWidth: .infinity)
                                 }
@@ -519,20 +540,37 @@ private struct SYNQPanel: View {
                         actionButton("Clipboard", icon: "doc.on.clipboard") { pairing.sendClipboard() }
                     }
                     if pairing.isFeatureAvailable(.files) {
-                        actionButton("File", icon: "paperplane") { pairing.chooseAndSendFile() }
+                        actionButton("Send File", icon: "paperplane") { pairing.showFileDropWindow() }
+                        actionButton("Browse Files", icon: "folder") { pairing.showRemoteFileBrowser() }
                     }
-                    if pairing.isFeatureAvailable(.findDevice) {
-                        actionButton(
-                            pairing.macRinging || pairing.androidRinging ? "Stop" : "Ring",
-                            icon: pairing.macRinging || pairing.androidRinging ? "stop.circle" : "bell"
-                        ) {
-                            if pairing.macRinging || pairing.androidRinging { pairing.stopFinding() }
-                            else { pairing.findAndroid() }
+                    if pairing.macRinging || pairing.androidRinging {
+                        actionButton("Stop Ringing", icon: "stop.circle.fill") {
+                            pairing.stopFinding()
                         }
-                    }
-                    if pairing.isFeatureAvailable(.ping) {
-                        actionButton("Ping", icon: "wave.3.right") { pairing.sendPing() }
-                            .help("Play a short alert on Android")
+                    } else if pairing.isFeatureAvailable(.findDevice) {
+                        actionButton("Find Device", icon: "bell") {
+                            pairing.findAndroid()
+                        }
+                        .contextMenu {
+                            Button {
+                                pairing.findAndroid()
+                            } label: {
+                                Label("Ring Phone (Continuous Alarm)", systemImage: "bell.fill")
+                            }
+                            if pairing.isFeatureAvailable(.ping) {
+                                Button {
+                                    pairing.sendPing()
+                                } label: {
+                                    Label("Ping Phone (Quick Alert)", systemImage: "wave.3.right")
+                                }
+                            }
+                        }
+                        .help(pairing.isFeatureAvailable(.ping) ? "Ring phone (right-click to Ping)" : "Ring phone to locate it")
+                    } else if pairing.isFeatureAvailable(.ping) {
+                        actionButton("Ping Phone", icon: "wave.3.right") {
+                            pairing.sendPing()
+                        }
+                        .help("Play a short alert on Android")
                     }
                     if pairing.isFeatureAvailable(.calls) {
                         actionButton("Call", icon: "phone.arrow.up.right") {
@@ -547,21 +585,6 @@ private struct SYNQPanel: View {
                     }
                 }
                 QuickActionsPanel(actions: pairing.quickActions)
-
-                if pairing.isFeatureAvailable(.files) {
-                    Button { pairing.showFileDropWindow() } label: {
-                        Label(
-                            L10n.text("drop.open", fallback: "Open file drop window"),
-                            systemImage: "rectangle.portrait.and.arrow.forward"
-                        )
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 7)
-                    }
-                    .modifier(NativeLiquidGlassButtonModifier())
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .accessibilityHint("Opens a window that stays visible while you drag a file from Finder")
-                }
                 if !pairing.isFeatureAvailable(.clipboard) &&
                     !pairing.isFeatureAvailable(.files) &&
                     !pairing.isFeatureAvailable(.findDevice) &&
@@ -586,6 +609,11 @@ private struct SYNQPanel: View {
                     Label(status, systemImage: status == "Ping delivered" ? "checkmark.circle.fill" : "wave.3.right")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                if let status = pairing.findDeviceStatus {
+                    Label(status, systemImage: status.contains("ringing") || status.contains("Ringing") ? "bell.fill" : (status.contains("not") || status.contains("off") || status.contains("did not") ? "exclamationmark.circle" : "checkmark.circle.fill"))
+                        .font(.caption)
+                        .foregroundStyle(status.contains("not") || status.contains("off") || status.contains("did not") ? .red : .secondary)
                 }
                 if pairing.isFeatureAvailable(.notifications) && !pairing.notificationsAuthorized {
                     Button { pairing.enableNotifications() } label: {
@@ -640,19 +668,19 @@ private struct SYNQPanel: View {
         .accessibilityHint("Runs the \(title.lowercased()) action for the connected device")
     }
 
-    private func footerPill(_ title: String, icon: String, isDestructive: Bool = false, action: @escaping () -> Void) -> some View {
-        return Button(action: action) {
+    private func footerButton(_ title: String, icon: String, isDestructive: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             Label(title, systemImage: icon)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 11, weight: .medium))
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
                 .frame(maxWidth: .infinity)
-                .padding(.horizontal, 7)
+                .padding(.horizontal, 8)
                 .padding(.vertical, 7)
                 .foregroundStyle(isDestructive ? Color.red : Color.primary)
                 .background(
-                    (isDestructive ? Color.red : Color.primary).opacity(isDestructive ? 0.13 : 0.09),
-                    in: Capsule()
+                    (isDestructive ? Color.red : Color.primary).opacity(isDestructive ? 0.12 : 0.06),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
                 )
         }
         .buttonStyle(.plain)
@@ -1047,6 +1075,15 @@ private struct SettingsView: View {
             }
         }
 
+        Section("Quiet Mode") {
+            Toggle("Quiet Mode", isOn: Binding(
+                get: { settings.quietModeEnabled },
+                set: { settings.setQuietModeEnabled($0) }
+            ))
+            Text("When Quiet Mode is active, incoming notification mirroring is silenced on this Mac without disconnecting. Incoming phone calls still alert normally.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+
         Section("Notification History") {
             Toggle("Keep a private local history", isOn: Binding(
                 get: { settings.notificationHistoryEnabled },
@@ -1120,10 +1157,10 @@ private struct SettingsView: View {
             }
         }
 
-        Section("Optional Features") {
-            Text("Control individual permissions for other local peer capabilities:")
+        Section("Feature Permissions") {
+            Text("Control individual permissions for local peer capabilities:")
                 .font(.caption).foregroundStyle(.secondary)
-            ForEach([SYNQFeature.findDevice, .ping, .links, .calls, .battery]) { feature in
+            ForEach(SYNQFeature.allCases) { feature in
                 Toggle(feature.title, isOn: Binding(
                     get: { settings.globalFeatures[feature] != false },
                     set: {
@@ -1148,7 +1185,7 @@ private struct SettingsView: View {
                 Text("Sync Your Nodes, Unified")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.5.4")")
+                Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "2.5.4")")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
 

@@ -1,9 +1,14 @@
 package dev.synq.core.discovery
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import java.net.InetAddress
 import java.util.UUID
@@ -18,10 +23,26 @@ class NsdDiscoveryService(
     private val servicePort: Int = DEFAULT_PORT,
 ) : DiscoveryService {
     private val nsd = context.applicationContext.getSystemService(NsdManager::class.java)
+    private val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+    private val connectivityManager = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+    private var multicastLock: WifiManager.MulticastLock? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var refreshRunnable: Runnable? = null
+    private var restartRunnable: Runnable? = null
+    private var networkCallbackRegistered = false
     private val found = ConcurrentHashMap<String, DiscoveredPeer>()
     private val mutablePeers = MutableStateFlow<List<DiscoveredPeer>>(emptyList())
     override val peers: StateFlow<List<DiscoveredPeer>> = mutablePeers.asStateFlow()
     private var running = false
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            scheduleRefresh()
+        }
+        override fun onLost(network: Network) {
+            scheduleRefresh()
+        }
+    }
 
     private val registrationListener = object : NsdManager.RegistrationListener {
         override fun onServiceRegistered(info: NsdServiceInfo) {
@@ -69,6 +90,20 @@ class NsdDiscoveryService(
     override fun start() {
         if (running) return
         running = true
+        runCatching {
+            if (multicastLock == null) {
+                multicastLock = wifiManager?.createMulticastLock("SYNQ:Discovery")?.apply {
+                    setReferenceCounted(false)
+                }
+            }
+            multicastLock?.let { if (!it.isHeld) it.acquire() }
+        }
+        if (!networkCallbackRegistered) {
+            runCatching {
+                connectivityManager?.registerDefaultNetworkCallback(networkCallback)
+                networkCallbackRegistered = true
+            }
+        }
         val info = NsdServiceInfo().apply {
             serviceName = registeredServiceName
             serviceType = SERVICE_TYPE
@@ -84,12 +119,45 @@ class NsdDiscoveryService(
 
     @Synchronized
     override fun stop() {
+        refreshRunnable?.let(mainHandler::removeCallbacks)
+        refreshRunnable = null
+        restartRunnable?.let(mainHandler::removeCallbacks)
+        restartRunnable = null
         if (!running) return
         running = false
+        if (networkCallbackRegistered) {
+            runCatching { connectivityManager?.unregisterNetworkCallback(networkCallback) }
+            networkCallbackRegistered = false
+        }
         runCatching { nsd.stopServiceDiscovery(discoveryListener) }
         runCatching { nsd.unregisterService(registrationListener) }
+        runCatching {
+            multicastLock?.let { if (it.isHeld) it.release() }
+        }
         found.clear()
         emitPeers()
+    }
+
+    @Synchronized
+    fun scheduleRefresh(delayMillis: Long = 800L) {
+        refreshRunnable?.let(mainHandler::removeCallbacks)
+        val runnable = Runnable {
+            synchronized(this@NsdDiscoveryService) {
+                if (running) {
+                    stop()
+                    val restart = Runnable {
+                        synchronized(this@NsdDiscoveryService) {
+                            restartRunnable = null
+                            start()
+                        }
+                    }
+                    restartRunnable = restart
+                    mainHandler.postDelayed(restart, 250L)
+                }
+            }
+        }
+        refreshRunnable = runnable
+        mainHandler.postDelayed(runnable, delayMillis)
     }
 
     @Synchronized
@@ -100,7 +168,14 @@ class NsdDiscoveryService(
         if (restart) stop()
         identity = identity.copy(deviceName = name)
         if (restart) {
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ start() }, 300)
+            val restartAction = Runnable {
+                synchronized(this@NsdDiscoveryService) {
+                    restartRunnable = null
+                    start()
+                }
+            }
+            restartRunnable = restartAction
+            mainHandler.postDelayed(restartAction, 300L)
         }
     }
 
