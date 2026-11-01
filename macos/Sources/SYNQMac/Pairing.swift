@@ -41,6 +41,15 @@ struct RemoteCallStatus: Equatable {
     let actions: [RemoteCallAction]
 }
 
+enum TransferPhase: String, Equatable {
+    case connecting
+    case receiving
+    case verifying
+    case completed
+    case failed
+    case cancelled
+}
+
 struct FileTransferRow: Identifiable, Equatable {
     let id: String
     let name: String
@@ -51,6 +60,10 @@ struct FileTransferRow: Identifiable, Equatable {
     let fileSize: Int64?
     let destinationURL: URL?
     let progressPercent: Double?
+    let transferredBytes: Int64?
+    let transferSpeed: Double?
+    let estimatedTimeRemaining: TimeInterval?
+    let phase: TransferPhase
 
     init(
         id: String,
@@ -61,7 +74,11 @@ struct FileTransferRow: Identifiable, Equatable {
         retryable: Bool = false,
         fileSize: Int64? = nil,
         destinationURL: URL? = nil,
-        progressPercent: Double? = nil
+        progressPercent: Double? = nil,
+        transferredBytes: Int64? = nil,
+        transferSpeed: Double? = nil,
+        estimatedTimeRemaining: TimeInterval? = nil,
+        phase: TransferPhase? = nil
     ) {
         self.id = id
         self.name = name
@@ -72,6 +89,22 @@ struct FileTransferRow: Identifiable, Equatable {
         self.fileSize = fileSize
         self.destinationURL = destinationURL
         self.progressPercent = progressPercent
+        self.transferredBytes = transferredBytes
+        self.transferSpeed = transferSpeed
+        self.estimatedTimeRemaining = estimatedTimeRemaining
+        if let phase {
+            self.phase = phase
+        } else if active {
+            self.phase = .receiving
+        } else if destinationURL != nil || status.contains("complete") || status.hasPrefix("Saved ") {
+            self.phase = .completed
+        } else if status.localizedCaseInsensitiveContains("cancel") {
+            self.phase = .cancelled
+        } else if status.localizedCaseInsensitiveContains("fail") || status.localizedCaseInsensitiveContains("error") {
+            self.phase = .failed
+        } else {
+            self.phase = .completed
+        }
     }
 }
 
@@ -243,9 +276,30 @@ private final class NotificationPresenter: NSObject, UNUserNotificationCenterDel
     }
 }
 
+struct QueuedConnectionRequest {
+    let connection: NWConnection
+    let timestamp: Date
+    var deviceID: String?
+    var deviceName: String?
+}
+
 @MainActor
 final class PairingCoordinator: ObservableObject {
-    @Published private(set) var state: PairingState = .idle
+    @Published private(set) var state: PairingState = .idle {
+        didSet {
+            switch state {
+            case .idle: qrPairingManager.setIdle()
+            case let .connecting(peer): qrPairingManager.setConnecting(peer: peer)
+            case let .verification(peer, code): qrPairingManager.setVerifying(code: code, peer: peer)
+            case let .connected(_, peer): qrPairingManager.setPaired(peer: peer)
+            case let .failed(msg): qrPairingManager.setFailed(message: msg)
+            }
+        }
+    }
+    public let qrPairingManager = QRPairingManager()
+    public var localDeviceID: String { deviceID }
+    public var localDeviceName: String { deviceName }
+    public var listeningPort: Int { Int(listener?.port?.rawValue ?? 42_458) }
     @Published private(set) var trustedDeviceIDs: Set<String>
     @Published private(set) var clipboardStatus: String? = nil
     @Published private(set) var remoteBattery: RemoteBatteryStatus? = nil
@@ -263,6 +317,8 @@ final class PairingCoordinator: ObservableObject {
     @Published private(set) var inFlightCallActionToken: String?
     @Published private(set) var pingStatus: String?
     @Published private(set) var findDeviceStatus: String?
+    @Published private(set) var queuedConnection: QueuedConnectionRequest? = nil
+    @Published private(set) var pendingConnectionPeer: String? = nil
     private var findDeviceStatusClearWorkItem: DispatchWorkItem?
     private var findDeviceTimeoutWorkItem: DispatchWorkItem?
     @Published private(set) var remoteFileEntries: [RemoteFsEntry] = []
@@ -563,7 +619,8 @@ final class PairingCoordinator: ObservableObject {
                 sessionId: current.id,
                 deviceId: self.deviceID,
                 deviceName: self.deviceName,
-                publicKey: current.localEphemeralKey
+                publicKey: current.localEphemeralKey,
+                platform: "macos"
             ))
         }
     }
@@ -1705,6 +1762,12 @@ final class PairingCoordinator: ObservableObject {
         reconnectWorkItem = nil
         secondaryInitiatorWorkItem?.cancel()
         secondaryInitiatorWorkItem = nil
+
+        if case .connected(let activeDeviceID, _) = state, let current = session {
+            handleSecondaryIncomingConnection(connection, activeSession: current, activeDeviceID: activeDeviceID)
+            return
+        }
+
         session?.close()
         state = .connecting("Android device")
         let current = Session(connection: connection, peerName: "Android device")
@@ -1720,6 +1783,73 @@ final class PairingCoordinator: ObservableObject {
         remoteFeatureStateReceived = false
         clearRemoteCall()
         configure(current, onReady: {})
+    }
+
+    private func handleSecondaryIncomingConnection(_ connection: NWConnection, activeSession: Session, activeDeviceID: String) {
+        NSLog("TRANSPORT secondary incoming connection while connected to %@", activeDeviceID)
+        let incomingSession = Session(connection: connection, peerName: "Incoming Device")
+        incomingSession.initiatedLocally = false
+        incomingSession.onMessage = { [weak self, weak incomingSession] message in
+            guard let self, let incomingSession else { return }
+            if message.kind == "pairing.offer" {
+                let devID = message.deviceId ?? ""
+                let devName = message.deviceName ?? "Device"
+                if devID == activeDeviceID {
+                    NSLog("TRANSPORT incoming reconnect from active device %@", devID)
+                    self.session?.close()
+                    self.session = incomingSession
+                    self.receive(message, in: incomingSession)
+                } else {
+                    NSLog("TRANSPORT queueing secondary connection from %@ (%@)", devName, devID)
+                    self.queuedConnection = QueuedConnectionRequest(
+                        connection: connection,
+                        timestamp: Date(),
+                        deviceID: devID,
+                        deviceName: devName
+                    )
+                    self.pendingConnectionPeer = devName
+                }
+            }
+        }
+        incomingSession.onFailure = { [weak self] in
+            guard let self else { return }
+            if self.queuedConnection?.connection === connection {
+                self.queuedConnection = nil
+                self.pendingConnectionPeer = nil
+            }
+        }
+        connection.stateUpdateHandler = { [weak incomingSession] newState in
+            DispatchQueue.main.async {
+                guard let incomingSession else { return }
+                switch newState {
+                case .ready:
+                    incomingSession.receive()
+                case .failed, .cancelled:
+                    incomingSession.onFailure?()
+                default:
+                    break
+                }
+            }
+        }
+        connection.start(queue: .main)
+    }
+
+    func processQueuedConnection() {
+        guard let queued = queuedConnection else { return }
+        queuedConnection = nil
+        pendingConnectionPeer = nil
+        if Date().timeIntervalSince(queued.timestamp) < 30.0 && queued.connection.state == .ready {
+            NSLog("TRANSPORT activating queued connection from %@", queued.deviceName ?? "Device")
+            accept(queued.connection)
+        }
+    }
+
+    func dismissQueuedConnection() {
+        if let queued = queuedConnection {
+            queued.connection.cancel()
+            queuedConnection = nil
+            pendingConnectionPeer = nil
+        }
     }
 
     private func configure(_ current: Session, onReady: @escaping () -> Void) {
@@ -1757,6 +1887,11 @@ final class PairingCoordinator: ObservableObject {
             self.clearRemoteCall()
             self.remoteFeatures = defaultRemoteFeatureState()
             self.remoteFeatureStateReceived = false
+            if let queued = self.queuedConnection, Date().timeIntervalSince(queued.timestamp) < 30.0, queued.connection.state == .ready {
+                NSLog("TRANSPORT switching to queued connection from %@", queued.deviceName ?? "Device")
+                self.processQueuedConnection()
+                return
+            }
             if !self.trustedDeviceIDs.isEmpty {
                 self.state = .idle
                 NSLog("TRANSPORT disconnected")
@@ -1817,6 +1952,14 @@ final class PairingCoordinator: ObservableObject {
                 guard let remoteDeviceID = message.deviceId else { throw PairingError.invalidMessage }
                 current.remoteDeviceID = remoteDeviceID
                 current.remoteEphemeralKey = publicKey
+                if let qrToken = message.token {
+                    if qrPairingManager.isSessionActive {
+                        guard qrPairingManager.consumeTokenIfMatching(qrToken) else {
+                            qrPairingManager.invalidateSession(reason: "Invalid or expired QR token")
+                            throw PairingError.invalidMessage
+                        }
+                    }
+                }
                 let key = P256.KeyAgreement.PrivateKey()
                 current.privateKey = key
                 current.localEphemeralKey = key.publicKey.x963Representation.base64EncodedString()
@@ -1828,7 +1971,8 @@ final class PairingCoordinator: ObservableObject {
                     sessionId: current.id,
                     deviceId: deviceID,
                     deviceName: deviceName,
-                    publicKey: current.localEphemeralKey
+                    publicKey: current.localEphemeralKey,
+                    platform: "macos"
                 ))
                 authenticateOrPrompt(current)
             case "pairing.answer":
@@ -2200,7 +2344,18 @@ final class PairingCoordinator: ObservableObject {
                 fileOperationID = UUID()
                 beginFileTransferUI()
                 fileTransferStatus = "Receiving \(transfer.displayName): \(transfer.progressStatus(force: true)!)"
-                updateFileTransfer(id: offer.transferId, name: transfer.displayName, status: fileTransferStatus!, active: true, fileSize: offer.size, progressPercent: 0.0)
+                updateFileTransfer(
+                    id: offer.transferId,
+                    name: transfer.displayName,
+                    status: fileTransferStatus!,
+                    active: true,
+                    fileSize: offer.size,
+                    progressPercent: 0.0,
+                    transferredBytes: 0,
+                    transferSpeed: nil,
+                    estimatedTimeRemaining: nil,
+                    phase: .connecting
+                )
                 current.send(PairingMessage(
                     kind: "files.accept",
                     sessionId: current.id,
@@ -2227,7 +2382,18 @@ final class PairingCoordinator: ObservableObject {
                 if let progress = transfer.progressStatus() {
                     fileTransferStatus = "Receiving \(transfer.displayName): \(progress)"
                     let percent = transfer.expectedSize > 0 ? (Double(transfer.receivedSize) / Double(transfer.expectedSize)) * 100.0 : nil
-                    updateFileTransfer(id: transferID, name: transfer.displayName, status: fileTransferStatus!, active: true, fileSize: transfer.expectedSize, progressPercent: percent)
+                    updateFileTransfer(
+                        id: transferID,
+                        name: transfer.displayName,
+                        status: fileTransferStatus!,
+                        active: true,
+                        fileSize: transfer.expectedSize,
+                        progressPercent: percent,
+                        transferredBytes: transfer.receivedSize,
+                        transferSpeed: transfer.currentSpeedMBs,
+                        estimatedTimeRemaining: transfer.currentETA,
+                        phase: .receiving
+                    )
                 }
             case "files.complete":
                 guard case .connected = state,
@@ -2244,11 +2410,36 @@ final class PairingCoordinator: ObservableObject {
                     if cancelledTransferIDs.contains(completion.transferId) { return }
                     throw PairingError.invalidMessage
                 }
+                fileTransferStatus = "Verifying file integrity…"
+                updateFileTransfer(
+                    id: completion.transferId,
+                    name: transfer.displayName,
+                    status: fileTransferStatus!,
+                    active: true,
+                    fileSize: transfer.expectedSize,
+                    progressPercent: 100.0,
+                    transferredBytes: transfer.receivedSize,
+                    transferSpeed: nil,
+                    estimatedTimeRemaining: 0,
+                    phase: .verifying
+                )
                 do {
                     let destination = try transfer.finish(expectedHash: completion.sha256)
                     let folder = destination.deletingLastPathComponent().path
                     fileTransferStatus = "Saved \(transfer.displayName) to \(folder)"
-                    updateFileTransfer(id: completion.transferId, name: transfer.displayName, status: fileTransferStatus!, active: false, fileSize: transfer.expectedSize, destinationURL: destination, progressPercent: 100.0)
+                    updateFileTransfer(
+                        id: completion.transferId,
+                        name: transfer.displayName,
+                        status: fileTransferStatus!,
+                        active: false,
+                        fileSize: transfer.expectedSize,
+                        destinationURL: destination,
+                        progressPercent: 100.0,
+                        transferredBytes: transfer.expectedSize,
+                        transferSpeed: nil,
+                        estimatedTimeRemaining: 0,
+                        phase: .completed
+                    )
                     fileTransferActive = fileTransfers.values.contains(where: { $0.active })
                     fileOperationID = nil
                     current.send(PairingMessage(
@@ -2260,6 +2451,15 @@ final class PairingCoordinator: ObservableObject {
                 } catch {
                     transfer.cancel()
                     fileTransferStatus = "File verification failed"
+                    updateFileTransfer(
+                        id: completion.transferId,
+                        name: transfer.displayName,
+                        status: fileTransferStatus!,
+                        active: false,
+                        fileSize: transfer.expectedSize,
+                        progressPercent: nil,
+                        phase: .failed
+                    )
                     throw error
                 }
             case "files.accept":
@@ -2520,7 +2720,11 @@ final class PairingCoordinator: ObservableObject {
         active: Bool,
         fileSize: Int64? = nil,
         destinationURL: URL? = nil,
-        progressPercent: Double? = nil
+        progressPercent: Double? = nil,
+        transferredBytes: Int64? = nil,
+        transferSpeed: Double? = nil,
+        estimatedTimeRemaining: TimeInterval? = nil,
+        phase: TransferPhase? = nil
     ) {
         let previous = fileTransfers[id]
         fileTransfers[id] = FileTransferRow(
@@ -2532,15 +2736,20 @@ final class PairingCoordinator: ObservableObject {
             retryable: !active && outgoingFileSources[id] != nil,
             fileSize: fileSize ?? previous?.fileSize,
             destinationURL: destinationURL ?? previous?.destinationURL,
-            progressPercent: progressPercent ?? previous?.progressPercent
+            progressPercent: progressPercent ?? previous?.progressPercent,
+            transferredBytes: transferredBytes ?? previous?.transferredBytes,
+            transferSpeed: transferSpeed ?? previous?.transferSpeed,
+            estimatedTimeRemaining: estimatedTimeRemaining ?? previous?.estimatedTimeRemaining,
+            phase: phase ?? previous?.phase
         )
         pruneTransferHistory()
         fileTransferActive = fileTransfers.values.contains(where: { $0.active })
         fileTransferWindow?.checkAutoDismiss()
     }
 
-    private func markFileTransferFinished(id: String, status: String, destinationURL: URL? = nil) {
+    private func markFileTransferFinished(id: String, status: String, destinationURL: URL? = nil, phase: TransferPhase? = nil) {
         guard let transfer = fileTransfers[id] else { return }
+        let resolvedPhase = phase ?? (destinationURL != nil || status.contains("complete") || status.hasPrefix("Saved ") ? .completed : .failed)
         fileTransfers[id] = FileTransferRow(
             id: transfer.id,
             name: transfer.name,
@@ -2550,7 +2759,11 @@ final class PairingCoordinator: ObservableObject {
             retryable: outgoingFileSources[id] != nil,
             fileSize: transfer.fileSize,
             destinationURL: destinationURL ?? transfer.destinationURL,
-            progressPercent: destinationURL != nil ? 100.0 : transfer.progressPercent
+            progressPercent: destinationURL != nil ? 100.0 : transfer.progressPercent,
+            transferredBytes: destinationURL != nil ? transfer.fileSize : transfer.transferredBytes,
+            transferSpeed: nil,
+            estimatedTimeRemaining: 0,
+            phase: resolvedPhase
         )
         pruneTransferHistory()
         fileTransferActive = fileTransfers.values.contains(where: { $0.active })
@@ -3026,20 +3239,33 @@ private final class Session {
         self.peerName = peerName
     }
 
-    func send(_ message: PairingMessage) {
-        guard let encoded = try? JSONEncoder().encode(message) else { return }
-        connection.send(content: encoded + Data([0x0A]), completion: .contentProcessed { error in
-            if let error { NSLog("TRANSPORT send failed kind=%@ error=%@", message.kind, String(describing: error)) }
+    private static let messageEncoder = JSONEncoder()
+    private let transportLock = NSLock()
+    private var lastTransportError: Error?
+    var hasTransportError: Bool { transportLock.withLock { lastTransportError != nil } }
+
+    @discardableResult
+    func send(_ message: PairingMessage) -> Bool {
+        guard let encoded = try? Self.messageEncoder.encode(message) else { return false }
+        connection.send(content: encoded + Data([0x0A]), completion: .contentProcessed { [weak self] error in
+            if let error {
+                NSLog("TRANSPORT send failed kind=%@ error=%@", message.kind, String(describing: error))
+                self?.transportLock.withLock { self?.lastTransportError = error }
+            }
         })
+        return true
     }
 
     func sendAndWait(_ message: PairingMessage) -> Bool {
-        guard let encoded = try? JSONEncoder().encode(message) else { return false }
+        guard let encoded = try? Self.messageEncoder.encode(message) else { return false }
         let semaphore = DispatchSemaphore(value: 0)
         var succeeded = false
-        connection.send(content: encoded + Data([0x0A]), completion: .contentProcessed { error in
+        connection.send(content: encoded + Data([0x0A]), completion: .contentProcessed { [weak self] error in
             succeeded = error == nil
-            if let error { NSLog("TRANSPORT send failed kind=%@ error=%@", message.kind, String(describing: error)) }
+            if let error {
+                NSLog("TRANSPORT send failed kind=%@ error=%@", message.kind, String(describing: error))
+                self?.transportLock.withLock { self?.lastTransportError = error }
+            }
             semaphore.signal()
         })
         return semaphore.wait(timeout: .now() + 15) == .success && succeeded
@@ -3098,6 +3324,8 @@ struct PairingMessage: Codable {
     var ciphertext: String? = nil
     var transferId: String? = nil
     var sequence: Int64? = nil
+    var token: String? = nil
+    var platform: String? = nil
 }
 
 enum PairingError: Error { case invalidMessage, cancelled }
@@ -3186,9 +3414,11 @@ private final class OutgoingFileTransfer {
                 var sequence: Int64 = 0
                 let progress = MacTransferProgress(totalBytes: self.offer.size)
                 while let chunk = try handle.read(upToCount: Self.chunkSize), !chunk.isEmpty {
-                    guard !self.isCancelled else { throw PairingError.cancelled }
+                    guard !self.isCancelled, !session.hasTransportError else {
+                        throw self.isCancelled ? PairingError.cancelled : PairingError.invalidMessage
+                    }
                     let sealed = try Self.encrypt(chunk, key: key)
-                    guard session.sendAndWait(PairingMessage(
+                    guard session.send(PairingMessage(
                         kind: "files.chunk",
                         sessionId: session.id,
                         messageId: UUID().uuidString.lowercased(),
@@ -3207,7 +3437,9 @@ private final class OutgoingFileTransfer {
                     }
                 }
                 if sequence > 0 { try self.waitForAcknowledgement(sequence: sequence - 1) }
-                guard !self.isCancelled else { throw PairingError.cancelled }
+                guard !self.isCancelled, !session.hasTransportError else {
+                    throw self.isCancelled ? PairingError.cancelled : PairingError.invalidMessage
+                }
                 let completionData = try JSONEncoder().encode(FileCompletePayload(
                     transferId: self.transferID,
                     sha256: self.offer.sha256
@@ -3295,7 +3527,7 @@ private final class IncomingFileTransfer {
 
     func append(_ data: Data, sequence: Int64) throws {
         guard sequence == nextSequence,
-              data.count <= 24 * 1024,
+              data.count <= 64 * 1024,
               receivedSize + Int64(data.count) <= expectedSize else { throw PairingError.invalidMessage }
         try handle.write(contentsOf: data)
         hasher.update(data: data)
@@ -3332,6 +3564,15 @@ private final class IncomingFileTransfer {
             ? Self.formatDuration(Int64(Double(remaining) / smoothedBytesPerSecond))
             : "calculating…"
         return "\(percent)% · \(Self.formatBytes(receivedSize)) / \(Self.formatBytes(expectedSize)) · \(Self.formatBytes(Int64(smoothedBytesPerSecond)))/s · \(eta) left"
+    }
+
+    var currentSpeedMBs: Double? {
+        smoothedBytesPerSecond > 0 ? smoothedBytesPerSecond / (1024.0 * 1024.0) : nil
+    }
+
+    var currentETA: TimeInterval? {
+        let remaining = max(0, expectedSize - receivedSize)
+        return smoothedBytesPerSecond >= 1 && remaining > 0 ? Double(remaining) / smoothedBytesPerSecond : nil
     }
 
     func cancel() {
@@ -3401,20 +3642,4 @@ private final class MacIdentity {
     func sign(_ data: Data) -> String {
         (try? key.signature(for: data).derRepresentation.base64EncodedString()) ?? ""
     }
-}
-
-func uniqueDestinationURL(_ requested: URL, fileManager: FileManager = .default) -> URL {
-    let isAvailable: (URL) -> Bool = { candidate in
-        let partURL = candidate.appendingPathExtension("bridgey-part")
-        return !fileManager.fileExists(atPath: candidate.path) && !fileManager.fileExists(atPath: partURL.path)
-    }
-    guard !isAvailable(requested) else { return requested }
-    let extensionPart = requested.pathExtension
-    let stem = requested.deletingPathExtension().lastPathComponent
-    for number in 2...10_000 {
-        let name = extensionPart.isEmpty ? "\(stem) \(number)" : "\(stem) \(number).\(extensionPart)"
-        let candidate = requested.deletingLastPathComponent().appendingPathComponent(name)
-        if isAvailable(candidate) { return candidate }
-    }
-    return requested.deletingLastPathComponent().appendingPathComponent(UUID().uuidString)
 }

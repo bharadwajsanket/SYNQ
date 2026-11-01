@@ -1,3 +1,49 @@
+# SYNQ v3.5.4 — Release Notes
+
+Release v3.5.4 introduces high-throughput pipelined file streaming, instant QR-based pairing with anti-SSRF protection, an animated first-launch welcome card, direct Android-to-Android encrypted file transfers, and a dynamic menu-bar connection indicator with reduced-motion support.
+
+SYNQ is developed and maintained by **Sanket Bharadwaj**.
+
+---
+
+## What's New in v3.5.4
+
+### Phase 1 — High-Throughput Streaming File Transfers
+- **Sliding-Window Pipelined Streaming:** Replaced synchronous stop-and-wait chunk acknowledgments with an unacknowledged sliding window (up to 64 in-flight chunks), eliminating per-chunk latency stalls.
+- **24 KiB Framing with Forward-Compatible 64 KiB Receiver Buffering:** Both sender implementations transmit 24 KiB chunks with cumulative block acknowledgments every 16 frames, while receiver validation bounds were expanded up to 64 KiB for forward compatibility.
+- **Fast MediaStore & Socket Buffering:** Android transfers utilize 256 KiB buffered streams for direct MediaStore I/O and block-based JSON header parsing, eliminating per-line socket flushing penalties.
+- **Integrity & Atomic Handling:** Preserved end-to-end SHA-256 integrity verification, safe temporary file isolation (`.part`), and automatic cancellation cleanup across both macOS and Android.
+
+### Phase 2 — Instant QR Code Pairing & Animated Welcome
+- **Mac QR Code Generator:** Menu bar popover can generate a temporary pairing QR code containing a secure, short-lived session payload (`synq://pair?...`).
+- **Android Camera Scanner:** Camera2-powered live QR scanner with continuous auto-focus, animated targeting reticle, camera permission handling, manual URI fallback, and vibration feedback.
+- **Defense-in-Depth Security:**
+  - Strict Anti-SSRF host validation: only private local IPv4 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.1`), link-local IPv6 (`fe80::`), and `.local` mDNS hostnames are accepted. Public WAN IPs are rejected immediately.
+  - 120-second session expiration timeout.
+  - Single-use pairing token consumption preventing replay attacks.
+  - **Uncompromised Authentication:** QR code acts solely as an out-of-band transport hint; mutual P-256 ECDH, HKDF key derivation, and mandatory 6-digit Short Authentication String (SAS) confirmation code verification remain strictly required on both screens.
+- **Animated Welcome Card:** Interactive first-launch welcome card displaying connected device nodes with a travelling pulse animation along the bridge, honoring system reduced-motion accessibility preferences.
+
+### Phase 3 — Direct Android-to-Android File Transfer
+- **Direct Peer-to-Peer Transfer:** Two Android phones on the same local Wi-Fi network can discover, pair, and transfer multiple files directly to each other without needing a Mac, cloud server, or relay.
+- **Strict Companion Feature Isolation:** To preserve device security and architectural clarity, phone-companion features (SMS messaging, phone call forwarding, notification mirroring, remote media control, clipboard auto-sync, and Ping/Ring) are strictly disabled for Android-to-Android connections. Only high-speed encrypted file transfer (`SYNQFeature.FILES`) is permitted.
+- **Multi-File Selection:** Android file picker upgraded to `OpenMultipleDocuments`, allowing multi-file batch transfers in a single action.
+- **Adaptive UI:** Android dashboard and device list dynamically distinguish between connected Mac computers and Android peers, updating icons, action titles, and status dialogs accordingly.
+
+### Phase 4 — Dynamic Menu Bar Connection Indicator
+- **Three-State Visual Indicator:**
+  - **Connected:** Both device icons rendered with a solid bridge line and circular endpoint nodes.
+  - **Connecting / Reconnecting:** Bridge rendered as a pulsing dashed line, indicating active discovery or handshake in progress.
+  - **Disconnected:** Connection bridge line and endpoint nodes are completely hidden, leaving distinct unlinked device silhouettes.
+- **Zero Idle Overhead & Accessibility:** The menu-bar pulse animation uses a 0.6s timer that runs **only** during active connecting or verifying states and is completely invalidated when connected or disconnected. Automatically respects `accessibilityDisplayShouldReduceMotion` (stays static).
+
+### Phase 5 — Reliability & Test Verification
+- Comprehensive cross-platform protocol, QR security, and crypto parity suite (89/89 standalone audit assertions passed with 100% success).
+- Zero telemetry, zero analytics, zero external dependencies, 100% private local-network communication.
+- Identified and resolved missing `invalidateSession` handler in `QRPairingManager` and unified `uniqueDestinationURL` file collision avoidance.
+
+---
+
 # SYNQ v2.5.4 — Release Notes
 
 Release v2.5.4 brings comprehensive UI polish, navigation and layout fixes, in-panel call and device finding feedback, an expanded Android permissions overview, and reliability enhancements across macOS and Android.

@@ -1,18 +1,35 @@
 #!/bin/sh
 set -eu
 
-SDK_PATH="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
+if [ -d "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk" ]; then
+  DEFAULT_SDK="/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+else
+  DEFAULT_SDK="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || echo "")"
+fi
+SDK_PATH="${SDKROOT:-$DEFAULT_SDK}"
 CACHE_ROOT="${TMPDIR:-/private/tmp}/synq-swift-build"
 CONFIGURATION="${CONFIGURATION:-debug}"
 APP_PATH=".build/$CONFIGURATION/SYNQ.app"
 
+if [ -x "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift" ]; then
+  SWIFT_EXEC="${SWIFT_BIN:-/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift}"
+else
+  SWIFT_EXEC="${SWIFT_BIN:-swift}"
+fi
+
+SWIFT_FLAGS="--disable-sandbox"
+if [ -d "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib/swift/host/plugins" ]; then
+  SWIFT_FLAGS="$SWIFT_FLAGS -Xswiftc -plugin-path -Xswiftc /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib/swift/host/plugins"
+fi
+
 env \
   SDKROOT="$SDK_PATH" \
+  DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer" \
   CLANG_MODULE_CACHE_PATH="$CACHE_ROOT/clang" \
   SWIFTPM_MODULECACHE_OVERRIDE="$CACHE_ROOT/swift" \
-  swift build -c "$CONFIGURATION"
+  "$SWIFT_EXEC" build -c "$CONFIGURATION" $SWIFT_FLAGS
 
-BUILD_BIN_DIR="$(swift build -c "$CONFIGURATION" --show-bin-path)"
+BUILD_BIN_DIR="$("$SWIFT_EXEC" build -c "$CONFIGURATION" $SWIFT_FLAGS --show-bin-path)"
 mkdir -p "$APP_PATH/Contents/MacOS"
 mkdir -p "$APP_PATH/Contents/Resources"
 if [ -f "$BUILD_BIN_DIR/SYNQMac" ]; then

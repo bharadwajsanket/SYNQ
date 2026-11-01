@@ -247,6 +247,14 @@ class SYNQConnectionService : Service() {
             startForeground(NOTIFICATION_ID, buildNotification(lastStatus))
             return START_STICKY
         }
+        if (intent?.action == AndroidShareManager.ACTION_ACCEPT_SHARE) {
+            (application as SYNQApplication).shareManager.acceptIncomingTransfer()
+            return START_STICKY
+        }
+        if (intent?.action == AndroidShareManager.ACTION_DECLINE_SHARE) {
+            (application as SYNQApplication).shareManager.rejectIncomingTransfer()
+            return START_STICKY
+        }
         if (intent?.action == ACTION_STOP_FINDING) {
             (application as SYNQApplication).pairing.stopFinding()
             notificationManager.cancel(FIND_NOTIFICATION_ID)

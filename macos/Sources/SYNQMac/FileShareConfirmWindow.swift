@@ -1,5 +1,39 @@
 import AppKit
 import SwiftUI
+import QuickLookThumbnailing
+import PDFKit
+
+enum FileTypeCategory: String {
+    case image
+    case video
+    case pdf
+    case audio
+    case apk
+    case archive
+    case document
+    case other
+}
+
+func categoryForURL(_ url: URL) -> FileTypeCategory {
+    switch url.pathExtension.lowercased() {
+    case "jpg", "jpeg", "png", "webp", "gif", "heic", "heif", "tiff", "bmp", "svg":
+        return .image
+    case "mp4", "mov", "m4v", "mkv", "webm", "avi":
+        return .video
+    case "pdf":
+        return .pdf
+    case "mp3", "m4a", "aac", "wav", "flac", "ogg":
+        return .audio
+    case "apk":
+        return .apk
+    case "zip", "tar", "gz", "tgz", "bz2", "7z", "rar":
+        return .archive
+    case "txt", "md", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "rtf", "csv", "json":
+        return .document
+    default:
+        return .other
+    }
+}
 
 struct SharedFileItem: Identifiable {
     let id = UUID()
@@ -9,6 +43,64 @@ struct SharedFileItem: Identifiable {
     let size: Int64
     let formattedSize: String
     let icon: NSImage
+    let category: FileTypeCategory
+
+    var categoryLabel: String {
+        switch category {
+        case .image: return "Image"
+        case .video: return "Video"
+        case .pdf: return "PDF"
+        case .audio: return "Audio"
+        case .apk: return "Android App"
+        case .archive: return "Archive"
+        case .document: return "Document"
+        case .other: return isDirectory ? "Folder" : "File"
+        }
+    }
+
+    var categoryColor: Color {
+        switch category {
+        case .image: return .teal
+        case .video: return .indigo
+        case .pdf: return .red
+        case .audio: return .purple
+        case .apk: return .green
+        case .archive: return .orange
+        case .document: return .blue
+        case .other: return .secondary
+        }
+    }
+}
+
+func generateThumbnail(for url: URL, category: FileTypeCategory, size: CGSize = CGSize(width: 48, height: 48), completion: @escaping (NSImage?) -> Void) {
+    if category == .pdf {
+        DispatchQueue.global(qos: .userInitiated).async {
+            if let doc = PDFDocument(url: url), let page = doc.page(at: 0) {
+                let img = page.thumbnail(of: size, for: .mediaBox)
+                DispatchQueue.main.async { completion(img) }
+                return
+            }
+            DispatchQueue.main.async { completion(nil) }
+        }
+        return
+    }
+
+    let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+    let request = QLThumbnailGenerator.Request(
+        fileAt: url,
+        size: size,
+        scale: scale,
+        representationTypes: .thumbnail
+    )
+    QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { thumbnail, error in
+        DispatchQueue.main.async {
+            if let nsImage = thumbnail?.nsImage {
+                completion(nsImage)
+            } else {
+                completion(nil)
+            }
+        }
+    }
 }
 
 func inspectSharedFiles(_ urls: [URL]) -> [SharedFileItem] {
@@ -26,6 +118,7 @@ func inspectSharedFiles(_ urls: [URL]) -> [SharedFileItem] {
         let formattedSize = isDirectory
             ? "Folder — skipped"
             : ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+        let category = isDirectory ? .other : categoryForURL(url)
 
         return SharedFileItem(
             url: url,
@@ -33,7 +126,8 @@ func inspectSharedFiles(_ urls: [URL]) -> [SharedFileItem] {
             isDirectory: isDirectory,
             size: size,
             formattedSize: formattedSize,
-            icon: icon
+            icon: icon,
+            category: category
         )
     }
 }
@@ -160,27 +254,7 @@ private struct FileShareConfirmView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
                     ForEach(items) { item in
-                        HStack(spacing: 10) {
-                            Image(nsImage: item.icon)
-                                .resizable()
-                                .frame(width: 24, height: 24)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(item.name)
-                                    .font(.system(size: 13, weight: .medium))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Text(item.formattedSize)
-                                    .font(.caption)
-                                    .foregroundStyle(item.isDirectory ? Color.orange : Color.secondary)
-                            }
-                            Spacer()
-                        }
-                        .padding(.vertical, 3)
-                        .padding(.horizontal, 6)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(Color.primary.opacity(0.04))
-                        )
+                        SharedFileRowView(item: item)
                     }
                 }
                 .padding(2)
@@ -268,7 +342,7 @@ private struct FileShareConfirmView: View {
                         Circle()
                             .fill(Color.green)
                             .frame(width: 6, height: 6)
-                        Text("Connected")
+                        Text("Connected · Ready to send")
                             .font(.caption2.weight(.medium))
                             .foregroundStyle(.green)
                     }
@@ -293,11 +367,17 @@ private struct FileShareConfirmView: View {
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 10) {
                         Image(systemName: "smartphone")
+                            .font(.system(size: 20))
                             .foregroundStyle(Color.accentColor)
-                        Text(connected.name)
-                            .font(.system(size: 13, weight: .medium))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(connected.name)
+                                .font(.system(size: 13, weight: .medium))
+                            Text("Local network transfer")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
@@ -332,6 +412,95 @@ private struct FileShareConfirmView: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Color.secondary.opacity(0.1))
             )
+        }
+    }
+}
+
+private struct SharedFileRowView: View {
+    let item: SharedFileItem
+    @State private var thumbnail: NSImage? = nil
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+                    .frame(width: 36, height: 36)
+
+                if let thumb = thumbnail {
+                    Image(nsImage: thumb)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: 34, maxHeight: 34)
+                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                } else {
+                    categoryIcon
+                }
+            }
+            .frame(width: 36, height: 36)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.name)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                HStack(spacing: 6) {
+                    Text(item.categoryLabel)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(item.categoryColor)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(item.categoryColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    Text(item.formattedSize)
+                        .font(.caption)
+                        .foregroundStyle(item.isDirectory ? Color.orange : Color.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(0.03))
+        )
+        .onAppear {
+            if item.category == .image || item.category == .video || item.category == .pdf {
+                generateThumbnail(for: item.url, category: item.category) { img in
+                    self.thumbnail = img
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var categoryIcon: some View {
+        switch item.category {
+        case .image:
+            Image(systemName: "photo")
+                .foregroundStyle(Color.teal)
+        case .video:
+            Image(systemName: "film")
+                .foregroundStyle(Color.indigo)
+        case .pdf:
+            Image(systemName: "doc.richtext")
+                .foregroundStyle(Color.red)
+        case .audio:
+            Image(systemName: "music.note")
+                .foregroundStyle(Color.purple)
+        case .apk:
+            Image(systemName: "shippingbox.fill")
+                .foregroundStyle(Color.green)
+        case .archive:
+            Image(systemName: "doc.zipper")
+                .foregroundStyle(Color.orange)
+        case .document:
+            Image(systemName: "doc.text.fill")
+                .foregroundStyle(Color.blue)
+        case .other:
+            Image(nsImage: item.icon)
+                .resizable()
+                .frame(width: 24, height: 24)
         }
     }
 }

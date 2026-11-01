@@ -34,6 +34,17 @@ class NsdDiscoveryService(
     private val mutablePeers = MutableStateFlow<List<DiscoveredPeer>>(emptyList())
     override val peers: StateFlow<List<DiscoveredPeer>> = mutablePeers.asStateFlow()
     private var running = false
+    private val resolveQueue = java.util.ArrayDeque<NsdServiceInfo>()
+    private var resolveInProgress = false
+    private val resolveTimeoutRunnable = Runnable {
+        synchronized(this@NsdDiscoveryService) {
+            if (resolveInProgress) {
+                Log.w(TAG, "DISCOVERY resolve timed out; advancing queue")
+                resolveInProgress = false
+                processNextResolve()
+            }
+        }
+    }
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -78,6 +89,9 @@ class NsdDiscoveryService(
             resolve(info)
         }
         override fun onServiceLost(info: NsdServiceInfo) {
+            synchronized(this@NsdDiscoveryService) {
+                resolveQueue.removeAll { it.serviceName == info.serviceName }
+            }
             found.remove(info.serviceName)
             emitPeers()
             Log.i(TAG, "DISCOVERY peer lost service=${info.serviceName}")
@@ -119,6 +133,11 @@ class NsdDiscoveryService(
 
     @Synchronized
     override fun stop() {
+        mainHandler.removeCallbacks(resolveTimeoutRunnable)
+        synchronized(this) {
+            resolveQueue.clear()
+            resolveInProgress = false
+        }
         refreshRunnable?.let(mainHandler::removeCallbacks)
         refreshRunnable = null
         restartRunnable?.let(mainHandler::removeCallbacks)
@@ -181,29 +200,84 @@ class NsdDiscoveryService(
 
     @Suppress("DEPRECATION")
     private fun resolve(info: NsdServiceInfo) {
-        val listener = object : NsdManager.ResolveListener {
-            override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                Log.w(TAG, "DISCOVERY resolve failed code=$errorCode")
+        synchronized(this) {
+            if (resolveQueue.none { it.serviceName == info.serviceName }) {
+                resolveQueue.add(info)
             }
-            override fun onServiceResolved(serviceInfo: NsdServiceInfo) = accept(serviceInfo)
+            if (!resolveInProgress) {
+                processNextResolve()
+            }
         }
-        // The legacy resolver is retained as the minSdk-compatible path. Calls are
-        // serialized by NsdManager on supported releases and discovery hints remain untrusted.
-        nsd.resolveService(info, listener)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun processNextResolve() {
+        synchronized(this) {
+            if (resolveQueue.isEmpty()) {
+                resolveInProgress = false
+                return
+            }
+            val next = resolveQueue.poll() ?: return
+            resolveInProgress = true
+            mainHandler.postDelayed(resolveTimeoutRunnable, 5000L)
+
+            val listener = object : NsdManager.ResolveListener {
+                override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                    Log.w(TAG, "DISCOVERY resolve failed service=${serviceInfo.serviceName} code=$errorCode")
+                    onResolveFinished()
+                }
+
+                override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
+                    accept(serviceInfo)
+                    onResolveFinished()
+                }
+
+                private fun onResolveFinished() {
+                    mainHandler.removeCallbacks(resolveTimeoutRunnable)
+                    synchronized(this@NsdDiscoveryService) {
+                        resolveInProgress = false
+                        processNextResolve()
+                    }
+                }
+            }
+            runCatching {
+                nsd.resolveService(next, listener)
+            }.onFailure {
+                mainHandler.removeCallbacks(resolveTimeoutRunnable)
+                resolveInProgress = false
+                processNextResolve()
+            }
+        }
     }
 
     private fun accept(info: NsdServiceInfo) {
         val attributes = info.attributes.mapValues { it.value ?: byteArrayOf() }
         val parsed = DiscoveryTxtRecord.parse(info.serviceName, attributes)
+        if (parsed.deviceIdHint != null && parsed.deviceIdHint.equals(identity.deviceId, ignoreCase = true)) {
+            return
+        }
         val host = resolvedHost(info)
-        found[parsed.key] = parsed.copy(host = host?.hostAddress, port = info.port.takeIf { it in 1..65535 })
+        val port = info.port.takeIf { it in 1..65535 }
+        found[parsed.key] = parsed.copy(host = host?.hostAddress, port = port)
         emitPeers()
-        Log.i(TAG, "DISCOVERY peer discovered service=${info.serviceName}")
+        Log.i(TAG, "DISCOVERY peer discovered service=${info.serviceName} host=${host?.hostAddress} port=$port")
     }
 
     @Suppress("DEPRECATION")
-    private fun resolvedHost(info: NsdServiceInfo): InetAddress? =
-        if (Build.VERSION.SDK_INT >= 34) info.hostAddresses.firstOrNull() else info.host
+    private fun resolvedHost(info: NsdServiceInfo): InetAddress? {
+        if (Build.VERSION.SDK_INT >= 34) {
+            val addresses = info.hostAddresses
+            // Crucial fix: Prioritize IPv4 addresses so sockets can reliably connect over local Wi-Fi.
+            // On Android 14+ (Pixel, Moto), link-local IPv6 addresses (fe80::) are often listed first
+            // without scope IDs, causing connect() to fail immediately with ENETUNREACH.
+            return addresses.firstOrNull { it is java.net.Inet4Address && !it.isLoopbackAddress }
+                ?: addresses.firstOrNull { it is java.net.Inet4Address }
+                ?: addresses.firstOrNull { !it.isLinkLocalAddress && !it.isLoopbackAddress }
+                ?: addresses.firstOrNull()
+        } else {
+            return info.host
+        }
+    }
 
     private fun emitPeers() {
         mutablePeers.value = found.values.sortedBy { it.deviceNameHint.lowercase() }

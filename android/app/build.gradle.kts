@@ -16,8 +16,8 @@ android {
         applicationId = "bharadwaj.synq.bridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 27
-        versionName = "2.5.4"
+        versionCode = 35
+        versionName = "3.5.4"
     }
 
     signingConfigs {
@@ -35,7 +35,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.findByName("release")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 
@@ -57,7 +57,10 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.compose.material3:material3:1.3.1")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    implementation("androidx.compose.material:material-icons-extended:1.6.8")
+    implementation("com.google.zxing:core:3.5.3")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
 
 tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {

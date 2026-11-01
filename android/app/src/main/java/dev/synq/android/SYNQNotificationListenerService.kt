@@ -55,6 +55,7 @@ class SYNQNotificationListenerService : NotificationListenerService() {
             .filterNot { it.packageName == packageName }
             .forEach { forwardedNotifications.record(notificationToken(it.key), it.key, it.packageName) }
         updateTelephonyCallback()
+        (application as? SYNQApplication)?.mediaManager?.initSessionManager(ComponentName(this, SYNQNotificationListenerService::class.java))
         android.util.Log.i("SYNQ", "PLUGIN notification listener connected")
     }
 
@@ -385,6 +386,7 @@ class SYNQNotificationListenerService : NotificationListenerService() {
 
     private fun handleCallStateChanged(state: Int) {
         android.util.Log.d("SYNQ", "PLUGIN telephony state=${telephonyCallType(state) ?: "idle"}")
+        (application as? SYNQApplication)?.mediaManager?.onCallStateChanged(state)
         when (state) {
             TelephonyManager.CALL_STATE_RINGING,
             TelephonyManager.CALL_STATE_OFFHOOK,

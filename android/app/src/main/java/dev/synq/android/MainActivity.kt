@@ -53,6 +53,18 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.VolumeDown
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.Slider
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -62,7 +74,9 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
@@ -71,6 +85,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -83,6 +98,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -247,6 +263,8 @@ class MainActivity : ComponentActivity() {
                 SYNQApp(
                     discovery = discovery,
                     pairing = pairing,
+                    shareManager = synq.shareManager,
+                    updateManager = synq.updateManager,
                     settings = synq.settings,
                     onDeviceNameChanged = synq::updateDeviceName,
                     appNotificationsEnabled = appNotificationsEnabled,
@@ -408,6 +426,8 @@ private fun UnsupportedProfile() = Surface(Modifier.fillMaxSize()) {
 private fun SYNQApp(
     discovery: NsdDiscoveryService,
     pairing: PairingCoordinator,
+    shareManager: AndroidShareManager,
+    updateManager: SYNQUpdateManager,
     settings: SYNQSettings,
     onDeviceNameChanged: (String) -> Unit,
     appNotificationsEnabled: Boolean,
@@ -427,6 +447,7 @@ private fun SYNQApp(
 ) {
     val peers by discovery.peers.collectAsStateWithLifecycle()
     val pairingState by pairing.state.collectAsStateWithLifecycle()
+    val shareState by shareManager.state.collectAsStateWithLifecycle()
     val trustedIds by pairing.trustedDeviceIds.collectAsStateWithLifecycle()
     val clipboardStatus by pairing.clipboardStatus.collectAsStateWithLifecycle()
     val fileTransfers by pairing.fileTransfers.collectAsStateWithLifecycle()
@@ -439,11 +460,13 @@ private fun SYNQApp(
     val settingsState by settings.state.collectAsStateWithLifecycle()
     val receivedLink by pairing.quickActions.receivedLink.collectAsStateWithLifecycle()
     val quickActionStatus by pairing.quickActions.status.collectAsStateWithLifecycle()
+    val updateStatus by updateManager.status.collectAsStateWithLifecycle()
     val haptic = LocalHapticFeedback.current
     val context = LocalContext.current
 
     var currentDestination by rememberSaveable { mutableStateOf(NavDestination.HOME) }
     var permissionPrompt by remember { mutableStateOf<PermissionPrompt?>(null) }
+    var showQrScanner by rememberSaveable { mutableStateOf(false) }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -474,6 +497,16 @@ private fun SYNQApp(
                 },
                 actions = {
                     val isConnected = pairingState is PairingState.Connected
+                    IconButton(onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        showQrScanner = true
+                    }) {
+                        Icon(
+                            imageVector = Icons.Default.QrCodeScanner,
+                            contentDescription = "Scan QR Code",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                     Surface(
                         shape = CircleShape,
                         color = if (isConnected) Color(0xFF2EAD69).copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
@@ -541,6 +574,11 @@ private fun SYNQApp(
         when (currentDestination) {
             NavDestination.HOME -> HomeScreen(
                 pairingState = pairingState,
+                shareState = shareState,
+                onClearShareState = shareManager::clearTransferState,
+                onCancelShareTransfer = shareManager::cancelTransfer,
+                nearbyAndroidPeers = peers.filter { it.platformHint.equals("android", ignoreCase = true) },
+                onSendFilesToAndroid = { peer, uris -> shareManager.sendFiles(peer, uris, context.contentResolver) },
                 trustedDevices = trustedDevices,
                 receivedLink = receivedLink,
                 quickActionStatus = quickActionStatus,
@@ -576,12 +614,17 @@ private fun SYNQApp(
                 trustedDevices = trustedDevices,
                 trustedIds = trustedIds,
                 pairingState = pairingState,
+                pairing = pairing,
+                onRefreshDiscovery = { (context.applicationContext as SYNQApplication).refreshDiscovery() },
                 onPair = { peer ->
                     val host = peer.host
                     val port = peer.port
                     if (host != null && port != null) {
                         pairing.pair(host, port, peer.deviceNameHint)
                     }
+                },
+                onSendFilesToAndroid = { peer, uris ->
+                    shareManager.sendFiles(peer, uris, context.contentResolver)
                 },
                 onReconnect = { device ->
                     val match = peers.firstOrNull { it.deviceIdHint == device.id }
@@ -595,6 +638,7 @@ private fun SYNQApp(
                 },
                 onForget = pairing::forget,
                 onDisconnect = pairing::cancel,
+                onScanQR = { showQrScanner = true },
                 modifier = Modifier.padding(padding),
             )
             NavDestination.NOTIFICATIONS -> NotificationsScreen(
@@ -623,6 +667,8 @@ private fun SYNQApp(
                 trustedDevices = trustedDevices,
                 connectedDeviceId = (pairingState as? PairingState.Connected)?.deviceId,
                 remoteFeatures = remoteFeatures,
+                updateManager = updateManager,
+                updateStatus = updateStatus,
                 onDeviceNameChanged = onDeviceNameChanged,
                 onThemeModeChanged = settings::setThemeMode,
                 onOtpAssistanceChanged = settings::setOtpAssistanceEnabled,
@@ -679,15 +725,28 @@ private fun SYNQApp(
     }
 
     if (showOnboarding) {
-        AlertDialog(
-            onDismissRequest = {},
-            title = { Text(stringResource(R.string.welcome_title)) },
-            text = { Text(stringResource(R.string.welcome_body)) },
-            confirmButton = {
-                Button(onClick = onOnboardingComplete) {
-                    Text(stringResource(R.string.welcome_continue))
-                }
-            },
+        AnimatedWelcomeDialog(
+            onDismiss = onOnboardingComplete,
+            onScanQR = {
+                onOnboardingComplete()
+                showQrScanner = true
+            }
+        )
+    }
+
+    if (showQrScanner) {
+        QRScannerDialog(
+            onDismiss = { showQrScanner = false },
+            onPayloadScanned = { payload ->
+                showQrScanner = false
+                pairing.pair(
+                    host = payload.host,
+                    port = payload.port,
+                    peerName = payload.deviceName,
+                    userInitiated = true,
+                    qrToken = payload.token
+                )
+            }
         )
     }
 
@@ -711,6 +770,35 @@ private fun SYNQApp(
             confirmButton = { Button(onClick = pairing::cancel) { Text("OK") } },
         )
         else -> Unit
+    }
+
+    if (shareState is AndroidShareState.IncomingOffer) {
+        val offer = shareState as AndroidShareState.IncomingOffer
+        AlertDialog(
+            onDismissRequest = shareManager::rejectIncomingTransfer,
+            title = { Text("Incoming File") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("${offer.senderDeviceName} wants to send you a file:")
+                    Text(offer.fileName, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        formatFileSize(offer.fileSize),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = shareManager::acceptIncomingTransfer) {
+                    Text("Accept")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = shareManager::rejectIncomingTransfer) {
+                    Text("Decline")
+                }
+            }
+        )
     }
 
     permissionPrompt?.let { prompt ->
@@ -756,17 +844,31 @@ private fun SYNQApp(
 
     sharedContent?.let { content ->
         val isConnected = pairingState is PairingState.Connected
+        val isAndroidPeer = pairing.isAndroidPeerConnected
+        val nearbyAndroidPeers = peers.filter { it.platformHint.equals("android", ignoreCase = true) }
+        val targetAndroidPeer = nearbyAndroidPeers.firstOrNull()
         val isWebLink = content.files.isEmpty() && content.text?.let(::validatedWebLink) != null
         val requiredFeature = if (content.files.isNotEmpty()) SYNQFeature.FILES else (if (isWebLink) SYNQFeature.LINKS else SYNQFeature.CLIPBOARD)
         val featureAvailable = settings.isEnabled(
             requiredFeature,
             (pairingState as? PairingState.Connected)?.deviceId,
         ) && remoteFeatures[requiredFeature] != false
+
+        val sendToAndroidDirect = !isConnected && content.files.isNotEmpty() && targetAndroidPeer != null
+        val currentPairing = pairingState
+        val targetName = if (sendToAndroidDirect && targetAndroidPeer != null) {
+            targetAndroidPeer.deviceNameHint
+        } else if (currentPairing is PairingState.Connected) {
+            currentPairing.peerName
+        } else {
+            "peer"
+        }
+
         val summary = when {
-            isWebLink -> "Open this webpage on your Mac?"
-            content.files.size == 1 -> "Send the selected file to your Mac?"
-            content.files.isNotEmpty() -> "Send ${content.files.size} selected files to your Mac?"
-            else -> "Send the shared text to your Mac?"
+            isWebLink -> if (isAndroidPeer) "Web links are not supported for Android peers." else "Open this webpage on your Mac?"
+            content.files.size == 1 -> "Send the selected file to $targetName?"
+            content.files.isNotEmpty() -> "Send ${content.files.size} selected files to $targetName?"
+            else -> "Send the shared text to $targetName?"
         }
         AlertDialog(
             onDismissRequest = onSharedContentHandled,
@@ -778,11 +880,15 @@ private fun SYNQApp(
                         Text(content.text.orEmpty(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
                     }
                     when {
-                        !isConnected -> Text(
-                            "Waiting for your paired Mac to reconnect.",
+                        !isConnected && !sendToAndroidDirect -> Text(
+                            "Waiting for your paired device to reconnect or a nearby device.",
                             color = MaterialTheme.colorScheme.error,
                         )
-                        !featureAvailable -> Text(
+                        isAndroidPeer && isWebLink -> Text(
+                            "Web link continuation is only available with Mac.",
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        !sendToAndroidDirect && !featureAvailable -> Text(
                             "This feature is turned off on one of your devices.",
                             color = MaterialTheme.colorScheme.error,
                         )
@@ -791,9 +897,11 @@ private fun SYNQApp(
             },
             confirmButton = {
                 Button(
-                    enabled = isConnected && featureAvailable,
+                    enabled = (isConnected && featureAvailable && !(isAndroidPeer && isWebLink)) || sendToAndroidDirect,
                     onClick = {
-                        if (isWebLink) {
+                        if (sendToAndroidDirect && targetAndroidPeer != null) {
+                            shareManager.sendFiles(targetAndroidPeer, content.files, context.contentResolver)
+                        } else if (isWebLink) {
                             pairing.quickActions.sendLink(content.text.orEmpty())
                         } else {
                             content.text?.let { pairing.sendText(it) }
@@ -813,6 +921,11 @@ private fun SYNQApp(
 @Composable
 private fun HomeScreen(
     pairingState: PairingState,
+    shareState: AndroidShareState,
+    onClearShareState: () -> Unit,
+    onCancelShareTransfer: () -> Unit,
+    nearbyAndroidPeers: List<DiscoveredPeer>,
+    onSendFilesToAndroid: (DiscoveredPeer, List<Uri>) -> Unit,
     trustedDevices: List<TrustedDevice>,
     receivedLink: String?,
     quickActionStatus: String?,
@@ -833,9 +946,22 @@ private fun HomeScreen(
 ) {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let(pairing::sendFile)
+    val isAndroidPeer = pairing.isAndroidPeerConnected
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        uris.forEach(pairing::sendFile)
     }
+
+    var pendingAndroidRecipient by remember { mutableStateOf<DiscoveredPeer?>(null) }
+    val androidSharePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        val recipient = pendingAndroidRecipient
+        if (recipient != null && uris.isNotEmpty()) {
+            onSendFilesToAndroid(recipient, uris)
+        }
+        pendingAndroidRecipient = null
+    }
+
+    val mediaManager = (context.applicationContext as SYNQApplication).mediaManager
+    val mediaState by mediaManager.state.collectAsStateWithLifecycle()
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -878,20 +1004,20 @@ private fun HomeScreen(
                     Card(shape = RoundedCornerShape(22.dp), modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text(
-                                if (trustedDevices.isEmpty()) "Connect your Mac" else "Ready to connect",
+                                if (trustedDevices.isEmpty()) "Connect your devices" else "Ready to connect",
                                 style = MaterialTheme.typography.titleLarge,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
                                 if (trustedDevices.isEmpty())
-                                    "Pair with your Mac over local Wi-Fi to sync clipboard, files, and links."
+                                    "Pair with your Mac or another Android phone over local Wi-Fi to share files."
                                 else
-                                    "Keep your phone and Mac on the same network to connect automatically.",
+                                    "Keep your devices on the same network to connect automatically.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Button(onClick = onNavigateToDevices) {
-                                Text(if (trustedDevices.isEmpty()) "Pair a computer" else "View paired devices")
+                                Text(if (trustedDevices.isEmpty()) "Pair a device" else "View paired devices")
                             }
                         }
                     }
@@ -909,7 +1035,7 @@ private fun HomeScreen(
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
-                                        painter = painterResource(R.drawable.ic_nav_devices),
+                                        painter = painterResource(if (isAndroidPeer) R.drawable.ic_device_phone else R.drawable.ic_nav_devices),
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(24.dp)
@@ -1060,23 +1186,35 @@ private fun HomeScreen(
         item {
             val isConnected = pairingState is PairingState.Connected
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                DashboardActionTile(
-                    title = "Send Clipboard",
-                    subtitle = clipboardStatus ?: "Copy to Mac",
-                    enabled = isConnected && enabledFeatures[SYNQFeature.CLIPBOARD] != false,
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        pairing.sendClipboard()
-                    },
-                    modifier = Modifier.weight(1f)
-                )
+                if (!isAndroidPeer) {
+                    DashboardActionTile(
+                        title = "Send Clipboard",
+                        subtitle = clipboardStatus ?: "Copy to Mac",
+                        enabled = isConnected && enabledFeatures[SYNQFeature.CLIPBOARD] != false,
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            pairing.sendClipboard()
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                val hasAndroidRecipients = nearbyAndroidPeers.isNotEmpty()
                 DashboardActionTile(
                     title = "Send Files",
-                    subtitle = "Pick files for Mac",
-                    enabled = isConnected && enabledFeatures[SYNQFeature.FILES] != false,
+                    subtitle = if (pairingState is PairingState.Connected) "Send to ${pairingState.peerName}"
+                    else if (hasAndroidRecipients) "Send to nearby phone"
+                    else "Pick files",
+                    enabled = (isConnected && enabledFeatures[SYNQFeature.FILES] != false) || hasAndroidRecipients,
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        filePicker.launch(arrayOf("*/*"))
+                        if (isConnected && enabledFeatures[SYNQFeature.FILES] != false) {
+                            filePicker.launch(arrayOf("*/*"))
+                        } else if (nearbyAndroidPeers.size == 1) {
+                            pendingAndroidRecipient = nearbyAndroidPeers.first()
+                            androidSharePicker.launch(arrayOf("*/*"))
+                        } else {
+                            onNavigateToDevices()
+                        }
                     },
                     modifier = Modifier.weight(1f)
                 )
@@ -1093,6 +1231,35 @@ private fun HomeScreen(
             item {
                 Text(pingStatus, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
             }
+        }
+
+        if (mediaState.hasActiveSession && mediaState.title.isNotEmpty()) {
+            item { SectionTitle("Now playing") }
+            item {
+                AndroidMusicCard(
+                    media = mediaState,
+                    onToggle = mediaManager::togglePlayPause,
+                    onNext = mediaManager::skipNext,
+                    onPrev = mediaManager::skipPrevious,
+                    onSeek = mediaManager::seekTo,
+                    onVolume = mediaManager::setVolume
+                )
+            }
+        }
+
+        // SYNQ Link Nearby Sharing
+        item {
+            SynqLinkSection(
+                nearbyAndroidPeers = nearbyAndroidPeers,
+                activeTransfer = shareState,
+                onSendFiles = { peer ->
+                    pendingAndroidRecipient = peer
+                    androidSharePicker.launch(arrayOf("*/*"))
+                },
+                onCancelTransfer = onCancelShareTransfer,
+                onClearTransfer = onClearShareState,
+                onNavigateToDevices = onNavigateToDevices
+            )
         }
 
         // 4. Active File Transfers
@@ -1179,31 +1346,57 @@ private fun DevicesScreen(
     trustedDevices: List<TrustedDevice>,
     trustedIds: Set<String>,
     pairingState: PairingState,
+    pairing: PairingCoordinator,
+    onRefreshDiscovery: () -> Unit,
     onPair: (DiscoveredPeer) -> Unit,
+    onSendFilesToAndroid: (DiscoveredPeer, List<Uri>) -> Unit,
     onReconnect: (TrustedDevice) -> Unit,
     onForget: (String) -> Unit,
     onDisconnect: () -> Unit,
+    onScanQR: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val haptic = LocalHapticFeedback.current
     var deviceToForget by remember { mutableStateOf<TrustedDevice?>(null) }
+    var androidRecipientForPicker by remember { mutableStateOf<DiscoveredPeer?>(null) }
+    val androidFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        val target = androidRecipientForPicker
+        if (target != null && uris.isNotEmpty()) {
+            onSendFilesToAndroid(target, uris)
+        }
+        androidRecipientForPicker = null
+    }
 
+    val queuedConnection by pairing.queuedConnectionRequest.collectAsStateWithLifecycle()
     val connected = pairingState as? PairingState.Connected
     val trustedIdsSet = remember(trustedDevices) { trustedDevices.map { it.id.lowercase() }.toSet() }
     val trustedNamesSet = remember(trustedDevices) { trustedDevices.map { it.name.trim().lowercase() }.toSet() }
 
     val nearbyPeers = remember(peers, trustedIdsSet, trustedNamesSet, connected) {
+        val seen = mutableSetOf<String>()
         peers.filter { peer ->
             val peerId = peer.deviceIdHint?.lowercase()
             val peerName = peer.deviceNameHint.trim().lowercase()
             if (peerId != null && (trustedIdsSet.contains(peerId) || (connected != null && peerId == connected.deviceId.lowercase()))) {
                 return@filter false
             }
-            if (trustedNamesSet.contains(peerName) || (connected != null && peerName == connected.peerName.trim().lowercase())) {
+            if (connected != null && peerName == connected.peerName.trim().lowercase()) {
                 return@filter false
             }
-            true
+            val dedupeKey = peerId ?: peer.serviceName
+            seen.add(dedupeKey)
         }
+    }
+
+    val nearbyMacs = remember(nearbyPeers) {
+        nearbyPeers.filter { !it.platformHint.equals("android", ignoreCase = true) }
+    }
+    val nearbyAndroidPeers = remember(nearbyPeers) {
+        nearbyPeers.filter { it.platformHint.equals("android", ignoreCase = true) }
+    }
+
+    val uncoupledTrusted = remember(trustedDevices, connected) {
+        trustedDevices.filter { connected == null || !it.id.equals(connected.deviceId, ignoreCase = true) }
     }
 
     LazyColumn(
@@ -1211,7 +1404,52 @@ private fun DevicesScreen(
         contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Device management", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                TextButton(onClick = onRefreshDiscovery) {
+                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Scan again")
+                }
+            }
+        }
 
+        // Pending Connection Requests
+        val pending = queuedConnection
+        if (pending != null) {
+            item { SectionTitle("Pending connection request") }
+            item {
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        Modifier.padding(18.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(pending.deviceName, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                            Text("Connection request waiting for current session to finish", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Button(onClick = { pairing.processQueuedConnection() }) {
+                                Text("Accept")
+                            }
+                            OutlinedButton(onClick = { pairing.dismissQueuedConnection() }) {
+                                Text("Decline")
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if (connected != null) {
             item { SectionTitle("Current connection") }
             item {
@@ -1227,26 +1465,88 @@ private fun DevicesScreen(
                     }
                 }
             }
+        } else {
+            item {
+                Card(
+                    onClick = onScanQR,
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .background(MaterialTheme.colorScheme.primary, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.QrCodeScanner,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Scan QR Code to Pair",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Text(
+                                "Instantly connect by scanning the QR code on your Mac",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                            )
+                        }
+                    }
+                }
+            }
         }
 
-        item { SectionTitle("Paired computers") }
-        if (trustedDevices.isEmpty()) {
+        item { SectionTitle("Paired devices") }
+        if (uncoupledTrusted.isEmpty()) {
             item {
-                Text("No computers paired yet.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    if (connected != null && trustedDevices.isNotEmpty()) "Connected Mac is displayed above." else "No devices paired yet.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         } else {
-            items(trustedDevices, key = { it.id }) { device ->
+            items(uncoupledTrusted, key = { it.id }) { device ->
+                val isOnline = peers.any { peer ->
+                    peer.deviceIdHint?.equals(device.id, ignoreCase = true) == true ||
+                    peer.deviceNameHint.trim().equals(device.name.trim(), ignoreCase = true)
+                }
                 Card(shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
                     Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Column(Modifier.weight(1f)) {
                             Text(device.name, fontWeight = FontWeight.SemiBold)
-                            Text("ID: ${device.id.take(8)}…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Box(Modifier.size(8.dp).background(if (isOnline) Color(0xFF2EAD69) else MaterialTheme.colorScheme.outline, CircleShape))
+                                Text(
+                                    if (isOnline) "Available on local Wi-Fi" else "Offline / Searching",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (isOnline) Color(0xFF2EAD69) else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                         if (connected?.deviceId != device.id) {
-                            Button(onClick = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                onReconnect(device)
-                            }) {
+                            Button(
+                                enabled = isOnline,
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onReconnect(device)
+                                }
+                            ) {
                                 Text("Reconnect")
                             }
                         }
@@ -1258,12 +1558,23 @@ private fun DevicesScreen(
             }
         }
 
-        item { SectionTitle("Nearby computers") }
-        if (nearbyPeers.isEmpty()) {
+        if (nearbyAndroidPeers.isNotEmpty()) {
+            item { SectionTitle("Nearby Android devices (Direct share)") }
+            items(nearbyAndroidPeers, key = { it.serviceName }) { peer ->
+                PeerRow(peer = peer, isPaired = false) {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    androidRecipientForPicker = peer
+                    androidFilePicker.launch(arrayOf("*/*"))
+                }
+            }
+        }
+
+        item { SectionTitle("Nearby Mac devices") }
+        if (nearbyMacs.isEmpty()) {
             item {
-                if (peers.isNotEmpty()) {
+                if (peers.any { !it.platformHint.equals("android", ignoreCase = true) }) {
                     Text(
-                        "All discovered computers are already paired.",
+                        "All discovered Mac devices are already paired.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1275,7 +1586,7 @@ private fun DevicesScreen(
                 }
             }
         } else {
-            items(nearbyPeers, key = { it.serviceName }) { peer ->
+            items(nearbyMacs, key = { it.serviceName }) { peer ->
                 PeerRow(peer = peer, isPaired = false) {
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     onPair(peer)
@@ -1528,6 +1839,113 @@ private fun NotificationAppRow(
     }
 }
 
+private fun maskPhoneNumber(number: String): String {
+    val clean = number.trim()
+    val digits = clean.filter { it.isDigit() }
+    if (digits.length <= 4) return clean
+    val keepLast = 4
+    val totalDigits = digits.length
+    val maskStart = if (totalDigits > 7) 3 else 1
+    val maskEnd = totalDigits - keepLast
+    var dIdx = 0
+    val sb = StringBuilder()
+    for (ch in clean) {
+        if (ch.isDigit()) {
+            if (dIdx >= maskStart && dIdx < maskEnd) {
+                sb.append('•')
+            } else {
+                sb.append(ch)
+            }
+            dIdx++
+        } else {
+            sb.append(ch)
+        }
+    }
+    return sb.toString()
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AppearanceBottomSheet(
+    currentThemeMode: String,
+    onThemeModeSelected: (String) -> Unit,
+    onDismissRequest: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismissRequest,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 12.dp)
+                .padding(bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                "Appearance",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                "Choose how SYNQ appears on your device.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            val options = listOf(
+                Triple("system", "System default", "Follow your Android system dark or light theme"),
+                Triple("light", "Light", "Clean warm ivory aesthetic"),
+                Triple("dark", "Dark", "Deep charcoal washi aesthetic"),
+            )
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            ) {
+                options.forEachIndexed { index, (mode, label, desc) ->
+                    val isSelected = currentThemeMode == mode
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onThemeModeSelected(mode) }
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                label,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                desc,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        RadioButton(
+                            selected = isSelected,
+                            onClick = { onThemeModeSelected(mode) }
+                        )
+                    }
+                    if (index < options.lastIndex) {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun SettingsScreen(
     state: SYNQSettingsState,
@@ -1535,6 +1953,8 @@ private fun SettingsScreen(
     trustedDevices: List<TrustedDevice>,
     connectedDeviceId: String?,
     remoteFeatures: Map<SYNQFeature, Boolean>,
+    updateManager: SYNQUpdateManager,
+    updateStatus: UpdateStatus,
     onDeviceNameChanged: (String) -> Unit,
     onThemeModeChanged: (String) -> Unit,
     onOtpAssistanceChanged: (Boolean) -> Unit,
@@ -1567,10 +1987,22 @@ private fun SettingsScreen(
         }
     }
     var editedName by remember(state.deviceName) { mutableStateOf(state.deviceName) }
+    var showAppearanceSheet by remember { mutableStateOf(false) }
     var showAddFavouriteDialog by remember { mutableStateOf(false) }
     var newFavouriteName by remember { mutableStateOf("") }
     var newFavouriteNumber by remember { mutableStateOf("") }
     var showPermissionsPage by rememberSaveable { mutableStateOf(false) }
+
+    if (showAppearanceSheet) {
+        AppearanceBottomSheet(
+            currentThemeMode = state.themeMode,
+            onThemeModeSelected = { mode ->
+                onThemeModeChanged(mode)
+                showAppearanceSheet = false
+            },
+            onDismissRequest = { showAppearanceSheet = false },
+        )
+    }
 
     if (showPermissionsPage) {
         PermissionsScreen(
@@ -1594,7 +2026,7 @@ private fun SettingsScreen(
                         value = newFavouriteName,
                         onValueChange = { newFavouriteName = it },
                         label = { Text("Name") },
-                        placeholder = { Text("e.g. Madamji") },
+                        placeholder = { Text("e.g. Mom") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -1602,7 +2034,7 @@ private fun SettingsScreen(
                         value = newFavouriteNumber,
                         onValueChange = { newFavouriteNumber = it },
                         label = { Text("Phone Number") },
-                        placeholder = { Text("e.g. +91 9876543210") },
+                        placeholder = { Text("e.g. +1 555 123 4567") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -1653,96 +2085,8 @@ private fun SettingsScreen(
         contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        // 1. Appearance
-        item { SectionTitle("Appearance") }
-        item {
-            Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("Theme mode", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
-                    listOf("system" to "System default", "light" to "Light", "dark" to "Dark").forEach { (mode, label) ->
-                        Row(
-                            Modifier.fillMaxWidth().clickable { onThemeModeChanged(mode) },
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = state.themeMode == mode,
-                                onClick = { onThemeModeChanged(mode) }
-                            )
-                            Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 8.dp))
-                        }
-                    }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    Text("Device name", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
-                    OutlinedTextField(
-                        value = editedName,
-                        onValueChange = { editedName = it.take(64) },
-                        label = { Text("Phone display name") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    if (editedName.trim().isNotEmpty() && editedName.trim() != state.deviceName) {
-                        Button(
-                            onClick = { onDeviceNameChanged(editedName) },
-                            shape = RoundedCornerShape(12.dp)
-                        ) { Text("Save name") }
-                    }
-                }
-            }
-        }
-
-        // 2. Connection & Devices
-        item { SectionTitle("Connection & Devices") }
-        item {
-            Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(18.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            if (trustedDevices.isEmpty()) "No paired computers" else "${trustedDevices.size} paired computer${if (trustedDevices.size > 1) "s" else ""}",
-                            fontWeight = FontWeight.SemiBold,
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                        Text(
-                            "Manage pairings, connect, or forget computers in the Devices tab.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Button(onClick = onNavigateToDevices, shape = RoundedCornerShape(12.dp)) {
-                        Text("View")
-                    }
-                }
-            }
-        }
-
-        // 3. Notifications
-        item { SectionTitle("Notifications") }
-        item {
-            Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
-                Column {
-                    SettingToggleRow(
-                        title = "Quiet Mode",
-                        subtitle = "Silence forwarded SYNQ notifications on this device",
-                        checked = state.quietModeEnabled,
-                        onCheckedChange = onQuietModeChanged,
-                    )
-                    HorizontalDivider(Modifier.padding(horizontal = 18.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    SettingToggleRow(
-                        title = "Notification forwarding",
-                        subtitle = "Forward incoming phone notifications securely to your Mac",
-                        checked = state.globalFeatures[SYNQFeature.NOTIFICATIONS] != false,
-                        onCheckedChange = { onGlobalFeatureChanged(SYNQFeature.NOTIFICATIONS, it) },
-                    )
-                }
-            }
-        }
-
-        // 4. Features
-        item { SectionTitle("Features") }
+        // Section 1: Sync
+        item { SectionTitle("Sync") }
         item {
             Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
                 Column {
@@ -1780,79 +2124,26 @@ private fun SettingsScreen(
                         checked = state.otpAssistanceEnabled,
                         onCheckedChange = onOtpAssistanceChanged,
                     )
+                    HorizontalDivider(Modifier.padding(horizontal = 18.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    SettingToggleRow(
+                        title = "Notification forwarding",
+                        subtitle = "Forward incoming phone notifications securely to your Mac",
+                        checked = state.globalFeatures[SYNQFeature.NOTIFICATIONS] != false,
+                        onCheckedChange = { onGlobalFeatureChanged(SYNQFeature.NOTIFICATIONS, it) },
+                    )
+                    HorizontalDivider(Modifier.padding(horizontal = 18.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    SettingToggleRow(
+                        title = "Quiet Mode",
+                        subtitle = "Silence forwarded SYNQ notifications on this device",
+                        checked = state.quietModeEnabled,
+                        onCheckedChange = onQuietModeChanged,
+                    )
                 }
             }
         }
 
-        // 5. Privacy & Storage
-        item { SectionTitle("Privacy & Storage") }
-        item {
-            Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("Remote file browsing", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
-                            Text(
-                                "Allow paired Mac to browse and download files from authorized storage.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            checked = state.fileBrowsingEnabled,
-                            onCheckedChange = onFileBrowsingChanged,
-                        )
-                    }
-
-                    if (state.fileBrowsingEnabled) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text("Authorized directory", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    state.customBrowsingPath ?: "Default: Downloads folder (${Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).path})",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = { folderPicker.launch(null) },
-                                shape = RoundedCornerShape(12.dp),
-                            ) {
-                                Text("Choose folder…")
-                            }
-                            if (state.customBrowsingPath != null) {
-                                OutlinedButton(
-                                    onClick = { onCustomBrowsingPathChanged(null) },
-                                    shape = RoundedCornerShape(12.dp),
-                                ) {
-                                    Text("Reset to Downloads")
-                                }
-                            }
-                        }
-                    } else {
-                        Text(
-                            "Browsing is disabled. Remote list and download requests from Mac are rejected.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
-                }
-            }
-        }
-
-        // 6. Contacts & Calling
-        item { SectionTitle("Contacts & Calling") }
+        // Section 2: Calls & Contacts
+        item { SectionTitle("Calls & Contacts") }
         item {
             Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
                 Column {
@@ -1936,7 +2227,7 @@ private fun SettingsScreen(
                                 Column(Modifier.weight(1f)) {
                                     Text(contact.name, fontWeight = FontWeight.Medium)
                                     Text(
-                                        contact.number,
+                                        maskPhoneNumber(contact.number),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -1954,11 +2245,155 @@ private fun SettingsScreen(
             }
         }
 
-        // 7. About & Service
-        item { SectionTitle("About & Service") }
+        // Section 3: Privacy
+        item { SectionTitle("Privacy") }
         item {
             Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("Remote file browsing", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "Allow paired Mac to browse and download files from authorized storage.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = state.fileBrowsingEnabled,
+                            onCheckedChange = onFileBrowsingChanged,
+                        )
+                    }
+
+                    if (state.fileBrowsingEnabled) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text("Authorized directory", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    state.customBrowsingPath ?: "Default: Downloads folder (${Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).path})",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { folderPicker.launch(null) },
+                                shape = RoundedCornerShape(12.dp),
+                            ) {
+                                Text("Choose folder…")
+                            }
+                            if (state.customBrowsingPath != null) {
+                                OutlinedButton(
+                                    onClick = { onCustomBrowsingPathChanged(null) },
+                                    shape = RoundedCornerShape(12.dp),
+                                ) {
+                                    Text("Reset to Downloads")
+                                }
+                            }
+                        }
+                    } else {
+                        Text(
+                            "Browsing is disabled. Remote list and download requests from Mac are rejected.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            }
+        }
+
+        // Section 4: General
+        item { SectionTitle("General") }
+        item {
+            Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Text("Device name", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
+                    OutlinedTextField(
+                        value = editedName,
+                        onValueChange = { editedName = it.take(64) },
+                        label = { Text("Phone display name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    if (editedName.trim().isNotEmpty() && editedName.trim() != state.deviceName) {
+                        Button(
+                            onClick = { onDeviceNameChanged(editedName) },
+                            shape = RoundedCornerShape(12.dp)
+                        ) { Text("Save name") }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showAppearanceSheet = true },
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Appearance", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                when (state.themeMode) {
+                                    "light" -> "Light"
+                                    "dark" -> "Dark"
+                                    else -> "System default"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = { showAppearanceSheet = true },
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("Change")
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                if (trustedDevices.isEmpty()) "No paired computers" else "${trustedDevices.size} paired computer${if (trustedDevices.size > 1) "s" else ""}",
+                                fontWeight = FontWeight.SemiBold,
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Text(
+                                "Manage pairings, connect, or forget computers in the Devices tab.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Button(onClick = onNavigateToDevices, shape = RoundedCornerShape(12.dp)) {
+                            Text("View")
+                        }
+                    }
+                }
+            }
+        }
+
+        // Section 5: About
+        item { SectionTitle("About") }
+        item {
+            Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -1969,17 +2404,164 @@ private fun SettingsScreen(
                             fontWeight = FontWeight.Bold,
                             style = MaterialTheme.typography.titleMedium
                         )
-                        Text(
-                            "v2.5.4",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Text(
+                                "v3.5.4",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
                     }
                     Text(
                         "SYNQ communicates locally and directly with your Mac. No accounts, external servers, analytics, or third-party relays are used.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                    // OTA Updates Section
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "Software updates",
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.titleSmall
+                        )
+
+                        when (val s = updateStatus) {
+                            is UpdateStatus.Idle -> {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        "SYNQ 3.5.4 is installed",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Button(
+                                        onClick = { updateManager.checkForUpdates() },
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Text("Check for updates")
+                                    }
+                                }
+                            }
+                            is UpdateStatus.Checking -> {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                                    Text("Checking for updates…", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                            is UpdateStatus.UpToDate -> {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        "SYNQ is up to date (v${s.version})",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color(0xFF2EAD69)
+                                    )
+                                    OutlinedButton(
+                                        onClick = { updateManager.checkForUpdates() },
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Text("Check again")
+                                    }
+                                }
+                            }
+                            is UpdateStatus.UpdateAvailable -> {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(
+                                        "New version available: v${s.manifest.version}",
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    if (s.manifest.releaseNotes.isNotEmpty()) {
+                                        Text(
+                                            s.manifest.releaseNotes,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Button(
+                                        onClick = { updateManager.downloadUpdate(s.manifest) },
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("Download update (${s.manifest.size / 1024 / 1024} MB)")
+                                    }
+                                }
+                            }
+                            is UpdateStatus.Downloading -> {
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text("Downloading update…", style = MaterialTheme.typography.bodySmall)
+                                        Text("${s.progressPercent}%", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                    }
+                                    LinearProgressIndicator(
+                                        progress = { s.progressPercent / 100f },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    OutlinedButton(
+                                        onClick = { updateManager.cancelDownload() },
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Text("Cancel")
+                                    }
+                                }
+                            }
+                            is UpdateStatus.ReadyToInstall -> {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(
+                                        "Update v${s.manifest.version} ready to install",
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF2EAD69)
+                                    )
+                                    Button(
+                                        onClick = { updateManager.installUpdate(s.apkFile) },
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("Install update")
+                                    }
+                                }
+                            }
+                            is UpdateStatus.Error -> {
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(
+                                        s.message,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                    Button(
+                                        onClick = { updateManager.checkForUpdates() },
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Text("Retry")
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
                     OutlinedButton(
                         onClick = { showPermissionsPage = true },
                         modifier = Modifier.fillMaxWidth(),
@@ -1989,6 +2571,7 @@ private fun SettingsScreen(
                         Spacer(Modifier.width(8.dp))
                         Text("Permissions & Privacy Overview")
                     }
+
                     OutlinedButton(
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
                         onClick = onTurnOff,
@@ -2331,11 +2914,12 @@ private fun FeatureToggle(title: String, enabled: Boolean, onChanged: (Boolean) 
 
 @Composable
 private fun PeerRow(peer: DiscoveredPeer, isPaired: Boolean, onClick: () -> Unit) {
+    val isPhone = peer.platformHint.equals("android", ignoreCase = true)
     Card(shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Box(Modifier.size(36.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape), contentAlignment = Alignment.Center) {
                 Icon(
-                    painter = painterResource(R.drawable.ic_nav_devices),
+                    painter = painterResource(if (isPhone) R.drawable.ic_device_phone else R.drawable.ic_nav_devices),
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(20.dp)
@@ -2343,11 +2927,336 @@ private fun PeerRow(peer: DiscoveredPeer, isPaired: Boolean, onClick: () -> Unit
             }
             Column(Modifier.weight(1f)) {
                 Text(peer.deviceNameHint, fontWeight = FontWeight.SemiBold)
-                Text(if (isPaired) "Paired · click to reconnect" else "Click to pair", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val subtitle = if (isPhone) "Android · Tap to send files"
+                else if (isPaired) "Mac · Paired · tap to reconnect"
+                else "Mac · Tap to pair"
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Text("›", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
         }
     }
+}
+
+@Composable
+private fun AndroidTransferCard(
+    transfer: AndroidShareState.Transferring,
+    onCancel: () -> Unit = {},
+    onDismiss: () -> Unit = {},
+) {
+    Card(
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (transfer.isError) MaterialTheme.colorScheme.errorContainer
+            else if (transfer.isCompleted) MaterialTheme.colorScheme.primaryContainer
+            else MaterialTheme.colorScheme.surfaceContainerHigh
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.weight(1f)) {
+                    Text(transfer.fileName, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        "${if (transfer.isSending) "To" else "From"} ${transfer.peerName} · ${transfer.status}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (transfer.isCompleted || transfer.isError) {
+                    OutlinedButton(onClick = onDismiss) {
+                        Text("Dismiss")
+                    }
+                } else {
+                    OutlinedButton(onClick = onCancel) {
+                        Text("Cancel")
+                    }
+                }
+            }
+            if (!transfer.isCompleted && !transfer.isError) {
+                val progressFraction = if (transfer.totalBytes > 0) {
+                    (transfer.bytesTransferred.toFloat() / transfer.totalBytes.toFloat()).coerceIn(0f, 1f)
+                } else 0f
+                androidx.compose.material3.LinearProgressIndicator(
+                    progress = { progressFraction },
+                    modifier = Modifier.fillMaxWidth().height(6.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AndroidMusicCard(
+    media: AndroidMediaState,
+    onToggle: () -> Unit,
+    onNext: () -> Unit,
+    onPrev: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onVolume: (Int) -> Unit,
+) {
+    Card(
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                if (media.artwork != null) {
+                    Image(
+                        bitmap = media.artwork.asImageBitmap(),
+                        contentDescription = "Artwork",
+                        modifier = Modifier.size(54.dp).clip(RoundedCornerShape(12.dp))
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier.size(54.dp).background(
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                            RoundedCornerShape(12.dp)
+                        ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MusicNote,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        media.title.ifEmpty { "Playing" },
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        "${media.artist.ifEmpty { "Unknown artist" }} · ${media.playerName}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            if (media.durationSeconds > 0) {
+                var seekPos by remember(media.positionSeconds) { mutableFloatStateOf(media.positionSeconds.toFloat()) }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        "${seekPos.toInt() / 60}:${(seekPos.toInt() % 60).toString().padStart(2, '0')}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "${media.durationSeconds / 60}:${(media.durationSeconds % 60).toString().padStart(2, '0')}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Slider(
+                    value = seekPos.coerceIn(0f, media.durationSeconds.toFloat()),
+                    onValueChange = { seekPos = it },
+                    valueRange = 0f..media.durationSeconds.toFloat(),
+                    onValueChangeFinished = { onSeek(seekPos.toLong()) },
+                    modifier = Modifier.fillMaxWidth().height(20.dp)
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = onPrev,
+                    enabled = media.canSkipPrevious
+                ) {
+                    Icon(Icons.Default.SkipPrevious, contentDescription = "Previous")
+                }
+                Spacer(Modifier.width(16.dp))
+                FilledIconButton(
+                    onClick = onToggle,
+                    enabled = media.canPlayPause,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(
+                        if (media.playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (media.playing) "Pause" else "Play",
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+                Spacer(Modifier.width(16.dp))
+                IconButton(
+                    onClick = onNext,
+                    enabled = media.canSkipNext
+                ) {
+                    Icon(Icons.Default.SkipNext, contentDescription = "Next")
+                }
+            }
+
+            if (media.volumeSupported && media.maxVolume > 0) {
+                var vol by remember(media.volume) { mutableFloatStateOf(media.volume.toFloat()) }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
+                ) {
+                    Icon(
+                        Icons.Default.VolumeDown,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Slider(
+                        value = vol.coerceIn(0f, media.maxVolume.toFloat()),
+                        onValueChange = { vol = it },
+                        valueRange = 0f..media.maxVolume.toFloat(),
+                        onValueChangeFinished = { onVolume(vol.toInt()) },
+                        modifier = Modifier.weight(1f).height(16.dp)
+                    )
+                    Icon(
+                        Icons.Default.VolumeUp,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SynqLinkSection(
+    nearbyAndroidPeers: List<DiscoveredPeer>,
+    activeTransfer: AndroidShareState,
+    onSendFiles: (DiscoveredPeer) -> Unit,
+    onCancelTransfer: () -> Unit,
+    onClearTransfer: () -> Unit,
+    onNavigateToDevices: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("SYNQ Link", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                ) {
+                    Text(
+                        "Nearby Sharing",
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+
+        if (activeTransfer is AndroidShareState.Transferring) {
+            AndroidTransferCard(
+                transfer = activeTransfer,
+                onCancel = onCancelTransfer,
+                onDismiss = onClearTransfer
+            )
+        }
+
+        if (nearbyAndroidPeers.isNotEmpty()) {
+            nearbyAndroidPeers.forEach { peer ->
+                Card(
+                    onClick = { onSendFiles(peer) },
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_device_phone),
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(peer.deviceNameHint, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleSmall)
+                            Text("Available · Tap to send files", style = MaterialTheme.typography.bodySmall, color = Color(0xFF2EAD69))
+                        }
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = "Send",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
+        } else if (activeTransfer !is AndroidShareState.Transferring) {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_device_phone),
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Looking for nearby Android devices…", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                        Text("Make sure other phones have SYNQ open on this Wi-Fi", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun formatFileSize(bytes: Long): String {
+    if (bytes < 1024) return "$bytes B"
+    val exp = (Math.log(bytes.toDouble()) / Math.log(1024.0)).toInt().coerceIn(1, 6)
+    val pre = "KMGTPE"[exp - 1]
+    return String.format(java.util.Locale.US, "%.1f %sB", bytes / Math.pow(1024.0, exp.toDouble()), pre)
 }
 
 @Composable

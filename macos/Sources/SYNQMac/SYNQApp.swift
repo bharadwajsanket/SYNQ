@@ -1,82 +1,6 @@
 import AppKit
 import SwiftUI
 
-func makeMenuBarIcon(connected: Bool) -> NSImage {
-    let size = NSSize(width: 18, height: 18)
-    let image = NSImage(size: size, flipped: false) { _ in
-        guard let context = NSGraphicsContext.current?.cgContext else { return false }
-
-        context.setAllowsAntialiasing(true)
-        context.setShouldAntialias(true)
-        context.setLineCap(.round)
-        context.setLineJoin(.round)
-
-        // 1. Mac Stand Foot & Neck
-        let standFoot = CGPath(roundedRect: CGRect(x: 3.5, y: 1.8, width: 5.5, height: 1.2), cornerWidth: 0.6, cornerHeight: 0.6, transform: nil)
-        context.addPath(standFoot)
-        context.setFillColor(NSColor.black.cgColor)
-        context.fillPath()
-
-        let standNeck = CGPath(roundedRect: CGRect(x: 5.5, y: 2.8, width: 1.5, height: 1.6), cornerWidth: 0.5, cornerHeight: 0.5, transform: nil)
-        context.addPath(standNeck)
-        context.fillPath()
-
-        // 2. Mac Monitor Frame
-        let macRect = CGRect(x: 1.2, y: 4.2, width: 10.6, height: 8.2)
-        let macPath = CGPath(roundedRect: macRect, cornerWidth: 2.0, cornerHeight: 2.0, transform: nil)
-        context.addPath(macPath)
-        context.setLineWidth(1.25)
-        context.setStrokeColor(NSColor.black.cgColor)
-        context.strokePath()
-
-        // 3. Knockout behind Phone for clean overlay
-        let phoneCutout = CGPath(roundedRect: CGRect(x: 8.6, y: 1.2, width: 8.4, height: 13.2), cornerWidth: 2.8, cornerHeight: 2.8, transform: nil)
-        context.saveGState()
-        context.setBlendMode(.clear)
-        context.addPath(phoneCutout)
-        context.fillPath()
-        context.restoreGState()
-
-        // 4. Phone Frame
-        let phoneRect = CGRect(x: 9.5, y: 2.0, width: 6.8, height: 11.8)
-        let phonePath = CGPath(roundedRect: phoneRect, cornerWidth: 2.2, cornerHeight: 2.2, transform: nil)
-        context.addPath(phonePath)
-        context.setLineWidth(1.25)
-        context.setStrokeColor(NSColor.black.cgColor)
-        context.strokePath()
-
-        // 5. Connecting Sync Bridge between Mac and Phone
-        let bridgePath = CGMutablePath()
-        bridgePath.move(to: CGPoint(x: 5.4, y: 8.5))
-        bridgePath.addCurve(to: CGPoint(x: 12.9, y: 7.6),
-                            control1: CGPoint(x: 7.8, y: 9.8),
-                            control2: CGPoint(x: 10.2, y: 5.8))
-
-        if connected {
-            context.addPath(bridgePath)
-            context.setLineWidth(1.5)
-            context.setStrokeColor(NSColor.black.cgColor)
-            context.strokePath()
-
-            context.addArc(center: CGPoint(x: 5.4, y: 8.5), radius: 1.0, startAngle: 0, endAngle: .pi * 2, clockwise: true)
-            context.fillPath()
-
-            context.addArc(center: CGPoint(x: 12.9, y: 7.6), radius: 1.0, startAngle: 0, endAngle: .pi * 2, clockwise: true)
-            context.fillPath()
-        } else {
-            let dashes: [CGFloat] = [2.0, 1.4]
-            context.setLineDash(phase: 0, lengths: dashes)
-            context.addPath(bridgePath)
-            context.setLineWidth(1.0)
-            context.setStrokeColor(NSColor.black.withAlphaComponent(0.55).cgColor)
-            context.strokePath()
-        }
-        return true
-    }
-    image.isTemplate = true
-    return image
-}
-
 func makeSynqDeviceIcon(size: CGFloat) -> NSImage {
     let imgSize = NSSize(width: size, height: size)
     return NSImage(size: imgSize, flipped: false) { rect in
@@ -237,6 +161,9 @@ struct SYNQApp: App {
         NSApplication.shared.applicationIconImage = makeSynqDeviceIcon(size: 512)
     }
 
+    @State private var connectingPulse = false
+    @State private var pulseTimer: Timer?
+
     var body: some Scene {
         MenuBarExtra {
             SYNQPanel(
@@ -250,16 +177,37 @@ struct SYNQApp: App {
             Image(nsImage: menuBarIcon)
         }
         .menuBarExtraStyle(.window)
+        .onChange(of: pairing.state) { newState in
+            updatePulseTimer(for: newState)
+        }
     }
 
     private var menuBarIcon: NSImage {
-        let isConnected: Bool
-        if case .connected = pairing.state {
-            isConnected = true
-        } else {
-            isConnected = false
+        let connectionState: MenuBarConnectionState
+        switch pairing.state {
+        case .connected:
+            connectionState = .connected
+        case .connecting, .verification:
+            connectionState = .connecting(pulse: connectingPulse)
+        case .idle, .failed:
+            connectionState = .disconnected
         }
-        return makeMenuBarIcon(connected: isConnected)
+        return makeMenuBarIcon(state: connectionState)
+    }
+
+    private func updatePulseTimer(for state: PairingState) {
+        switch state {
+        case .connecting, .verification:
+            if pulseTimer == nil && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { _ in
+                    connectingPulse.toggle()
+                }
+            }
+        default:
+            pulseTimer?.invalidate()
+            pulseTimer = nil
+            connectingPulse = false
+        }
     }
 }
 
@@ -269,6 +217,7 @@ private struct SYNQPanel: View {
         case call
         case guest
         case fileDrop
+        case qrPairing
     }
 
     @ObservedObject var discovery: BonjourDiscovery
@@ -310,6 +259,16 @@ private struct SYNQPanel: View {
                         onBack: { withAnimation(.easeInOut(duration: 0.18)) {
                             screen = .home
                             pairing.fileDropPanelRequested = false
+                        } }
+                    )
+                    .transition(.opacity)
+                case .qrPairing:
+                    QRPairingPopoverView(
+                        manager: pairing.qrPairingManager,
+                        onConfirm: { pairing.confirm() },
+                        onBack: { withAnimation(.easeInOut(duration: 0.18)) {
+                            pairing.qrPairingManager.cancelSession()
+                            screen = .home
                         } }
                     )
                     .transition(.opacity)
@@ -404,9 +363,13 @@ private struct SYNQPanel: View {
             }
 
             Divider().padding(.top, 10)
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 footerButton("Settings", icon: "gearshape", action: onOpenSettings)
                     .help("Settings")
+                footerButton("Updates", icon: "arrow.triangle.2.circlepath") {
+                    SYNQUpdateManager.shared.checkForUpdates()
+                }
+                .help("Check for updates")
                 footerButton("Guest Share", icon: "person.crop.circle.badge.plus") {
                     if !pairing.guestTransferManager.isSessionActive {
                         pairing.guestTransferManager.startSession()
@@ -630,21 +593,24 @@ private struct SYNQPanel: View {
         }
 
     private var welcomeCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label(L10n.text("welcome.title", fallback: "Welcome to SYNQ"), systemImage: "link.circle.fill")
-                .font(.headline)
-            Text(L10n.text(
-                "welcome.body",
-                fallback: "Keep your Mac and phone on the same local network. Choose a device, compare the pairing code, and confirm it on both devices. Optional permissions are requested only when you use the related feature."
-            ))
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            Button(L10n.text("welcome.continue", fallback: "Get started")) {
+        AnimatedWelcomeView(
+            onGetStarted: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    settings.completeOnboarding()
+                }
+            },
+            onPairWithQR: {
                 settings.completeOnboarding()
+                pairing.qrPairingManager.startSession(
+                    deviceID: pairing.localDeviceID,
+                    deviceName: pairing.localDeviceName,
+                    port: pairing.listeningPort
+                )
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    screen = .qrPairing
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .accessibilityHint("Closes the welcome guide and starts device discovery")
-        }
+        )
     }
 
     private func actionButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
@@ -759,6 +725,35 @@ private struct SYNQPanel: View {
             .padding(11)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            Button {
+                pairing.qrPairingManager.startSession(
+                    deviceID: pairing.localDeviceID,
+                    deviceName: pairing.localDeviceName,
+                    port: pairing.listeningPort
+                )
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    screen = .qrPairing
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "qrcode")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color.accentColor)
+                    Text("Pair with QR Code")
+                        .font(.caption.weight(.medium))
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .frame(height: 36)
+                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
@@ -1185,9 +1180,16 @@ private struct SettingsView: View {
                 Text("Sync Your Nodes, Unified")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "2.5.4")")
+                Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.5.4")")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
+
+                Button("Check for Updates…") {
+                    SYNQUpdateManager.shared.checkForUpdates()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+                .padding(.top, 4)
 
                 Divider().padding(.vertical, 8)
 

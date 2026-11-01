@@ -33,9 +33,9 @@ Pair your devices once. SYNQ reconnects when they’re back on the same network.
 
 |  |  |
 |---|---|
-| **Clipboard & Smart Links**<br>Send copied text and detected links seamlessly between Mac and Android. | **Files & Transfers**<br>AirDrop-style transfers with live previews, folder support, and direct drag-and-drop. |
+| **Clipboard & Smart Links**<br>Send copied text and detected links seamlessly between Mac and Android. | **Files & Transfers**<br>High-speed pipelined transfers, multi-file batching, and Android-to-Android direct transfer. |
 | **Phone notifications**<br>See Android notifications in macOS Notification Center and use supported quick replies. | **Calls & SMS from Mac**<br>Place calls and compose SMS text messages directly to contacts from the menu bar. |
-| **Contacts & Favourites**<br>Browse synced phone contacts and keep favourite numbers close at hand. | **Remote File Browser**<br>Explore Android files and download documents on demand from your Mac. |
+| **QR Code Pairing**<br>Scan from Android to pair in seconds, verified with mutual 6-digit confirmation codes. | **Remote File Browser**<br>Explore Android files and download documents on demand from your Mac. |
 | **Guest Share**<br>Let a nearby guest send files to your Mac through a temporary QR link, without pairing. | **Find your phone**<br>Ring it or send a quiet ping from your Mac with clear status feedback. |
 
 ## Get SYNQ
@@ -49,11 +49,12 @@ Want the ZIP, checksums, or older versions? Visit [all releases](https://github.
 
 ### First connection
 
-1. Install SYNQ on your Mac and Android phone.
+1. Install SYNQ on your Mac and Android phone (or between two Android phones).
 2. Put both devices on the same Wi-Fi network.
-3. Open SYNQ on both devices. The Mac discovers the phone nearby.
-4. Choose the phone and compare the pairing code on both screens.
-5. Accept the pairing. SYNQ creates an encrypted connection and reconnects on that network later.
+3. Open SYNQ on both devices.
+4. Pair via instant QR code scanning or automatic local network discovery.
+5. Confirm the matching 6-digit security code on both screens.
+6. Accept the pairing. SYNQ establishes an end-to-end encrypted connection and reconnects automatically.
 
 ## Privacy and permissions
 

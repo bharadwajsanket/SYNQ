@@ -618,10 +618,61 @@ private struct FileTransferHeroCard: View {
                     .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .frame(maxWidth: 220)
 
-                Text(subtitleText)
-                    .font(.system(size: 12, weight: .regular))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if transfer.phase == .verifying {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.mini)
+                        Text("Verifying file integrity…")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    .padding(.top, 2)
+                } else if transfer.active {
+                    VStack(spacing: 3) {
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(Color.primary.opacity(0.08))
+                                    .frame(height: 4)
+                                Capsule()
+                                    .fill(Color.accentColor)
+                                    .frame(width: max(0, min(geo.size.width, geo.size.width * CGFloat((transfer.progressPercent ?? 0) / 100.0))), height: 4)
+                                    .animation(.linear(duration: 0.2), value: transfer.progressPercent)
+                            }
+                        }
+                        .frame(width: 200, height: 4)
+
+                        HStack {
+                            if let transferred = transfer.transferredBytes, let total = transfer.fileSize, total > 0 {
+                                Text("\(ByteCountFormatter.string(fromByteCount: transferred, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: total, countStyle: .file))")
+                                    .font(.system(size: 10).monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            } else if let percent = transfer.progressPercent {
+                                Text("\(Int(percent))%")
+                                    .font(.system(size: 10).monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if let speed = transfer.transferSpeed, speed > 0 {
+                                Text(String(format: "%.1f MB/s", speed))
+                                    .font(.system(size: 10).monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let eta = transfer.estimatedTimeRemaining, eta > 0 {
+                                Text("· \(Int(ceil(eta)))s")
+                                    .font(.system(size: 10).monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(width: 200)
+                    }
+                    .padding(.top, 4)
+                } else {
+                    Text(subtitleText)
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
 
             Spacer(minLength: 12)
@@ -830,8 +881,14 @@ private struct FileTransferListRow: View {
                         Text("Saved")
                             .font(.caption2.weight(.medium))
                             .foregroundStyle(Color.green)
+                    } else if transfer.phase == .verifying {
+                        Text("Verifying integrity…")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(Color.accentColor)
                     } else if transfer.active {
-                        Text(transfer.progressPercent.map { "\(Int($0))%" } ?? "Transferring…")
+                        let pctText = transfer.progressPercent.map { "\(Int($0))%" } ?? "Transferring…"
+                        let speedText = transfer.transferSpeed.map { String(format: " · %.1f MB/s", $0) } ?? ""
+                        Text(pctText + speedText)
                             .font(.caption2.monospacedDigit().weight(.medium))
                             .foregroundStyle(Color.accentColor)
                     } else {

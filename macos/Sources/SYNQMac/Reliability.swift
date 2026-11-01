@@ -3,6 +3,7 @@ import Network
 
 let maximumProtocolFrameBytes = 65_536
 let maximumTransferHistory = 20
+private let protocolJSONDecoder = JSONDecoder()
 
 func reconnectDelay(attempt: Int) -> TimeInterval {
     let boundedAttempt = min(max(attempt, 0), 30)
@@ -29,7 +30,7 @@ func decodeProtocolMessage(_ data: Data) throws -> PairingMessage {
     guard !data.isEmpty, data.count <= maximumProtocolFrameBytes else {
         throw PairingError.invalidMessage
     }
-    let message = try JSONDecoder().decode(PairingMessage.self, from: data)
+    let message = try protocolJSONDecoder.decode(PairingMessage.self, from: data)
     guard !message.kind.isEmpty, message.kind.utf8.count <= 64,
           !message.sessionId.isEmpty, message.sessionId.utf8.count <= 128 else {
         throw PairingError.invalidMessage
@@ -73,4 +74,20 @@ func resolveConnectionEndpoint(
         return (host, port, peer.deviceNameHint)
     }
     return lastTrustedEndpoint
+}
+
+func uniqueDestinationURL(_ requested: URL, fileManager: FileManager = .default) -> URL {
+    let isAvailable: (URL) -> Bool = { candidate in
+        let partURL = candidate.appendingPathExtension("bridgey-part")
+        return !fileManager.fileExists(atPath: candidate.path) && !fileManager.fileExists(atPath: partURL.path)
+    }
+    guard !isAvailable(requested) else { return requested }
+    let extensionPart = requested.pathExtension
+    let stem = requested.deletingPathExtension().lastPathComponent
+    for number in 2...10_000 {
+        let name = extensionPart.isEmpty ? "\(stem) \(number)" : "\(stem) \(number).\(extensionPart)"
+        let candidate = requested.deletingLastPathComponent().appendingPathComponent(name)
+        if isAvailable(candidate) { return candidate }
+    }
+    return requested.deletingLastPathComponent().appendingPathComponent(UUID().uuidString)
 }

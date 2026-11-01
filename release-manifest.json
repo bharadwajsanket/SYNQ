@@ -1,0 +1,25 @@
+{
+  "version": "3.5.4",
+  "versionCode": 35,
+  "releaseDate": "2026-11-01",
+  "releaseNotes": "SYNQ 3.5.4: Redesigned Apple-inspired dark-first aesthetic, in-app OTA update system for Android and macOS, aspect-ratio corrected QR camera scanner, sequential NSD resolve queue, and streamlined local file sharing.",
+  "platforms": {
+    "android": {
+      "version": "3.5.4",
+      "versionCode": 35,
+      "packageName": "bharadwaj.synq.bridge",
+      "minSdk": 26,
+      "targetSdk": 36,
+      "downloadUrl": "https://github.com/bharadwajsanket/SYNQ/releases/download/v3.5.4/SYNQ-v3.5.4-release.apk",
+      "size": 1610556,
+      "sha256": "1509b4fd73585413d8a4169fb96c603ca89b50af9ad5b03379d93da8ab155017"
+    },
+    "macos": {
+      "version": "3.5.4",
+      "buildNumber": "35",
+      "downloadUrl": "https://github.com/bharadwajsanket/SYNQ/releases/download/v3.5.4/SYNQ-macOS.dmg",
+      "size": 2464888,
+      "sha256": "7dc9db64fbb108a5c08788b2e6a55e25f6df5376f19abe31017bcf3228baa64b"
+    }
+  }
+}

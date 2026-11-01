@@ -25,6 +25,8 @@ class ManifestPermissionsTest {
                 "android.permission.ANSWER_PHONE_CALLS",
                 "android.permission.READ_CONTACTS",
                 "android.permission.SEND_SMS",
+                "android.permission.CAMERA",
+                "android.permission.REQUEST_INSTALL_PACKAGES",
             ),
             declared,
         )

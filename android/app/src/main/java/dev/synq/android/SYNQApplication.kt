@@ -22,12 +22,21 @@ class SYNQApplication : Application() {
         private set
     lateinit var pairing: PairingCoordinator
         private set
+    lateinit var shareManager: AndroidShareManager
+        private set
+    lateinit var updateManager: SYNQUpdateManager
+        private set
+    lateinit var mediaManager: AndroidMediaManager
+        private set
     lateinit var discovery: NsdDiscoveryService
         private set
     lateinit var settings: SYNQSettings
         private set
     var isSYNQEnabled: Boolean = false
         private set
+    var isAppInForeground: Boolean = false
+        private set
+    private var startedActivities = 0
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var lastBatteryIntent: Intent? = null
     private var batteryReceiverRegistered = false
@@ -51,7 +60,27 @@ class SYNQApplication : Application() {
         settings = SYNQSettings(this, systemDeviceName)
         val deviceName = settings.state.value.deviceName
         pairing = PairingCoordinator(this, deviceId, deviceName, settings = settings)
+        shareManager = AndroidShareManager(this, deviceId, deviceName)
+        mediaManager = AndroidMediaManager(this)
+        updateManager = SYNQUpdateManager(this)
+        pairing.androidShareManager = shareManager
         discovery = NsdDiscoveryService(this, LocalDiscoveryIdentity(deviceId, deviceName))
+
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            override fun onActivityStarted(activity: android.app.Activity) {
+                startedActivities++
+                isAppInForeground = startedActivities > 0
+            }
+            override fun onActivityStopped(activity: android.app.Activity) {
+                startedActivities--
+                isAppInForeground = startedActivities > 0
+            }
+            override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: android.os.Bundle?) {}
+            override fun onActivityResumed(activity: android.app.Activity) {}
+            override fun onActivityPaused(activity: android.app.Activity) {}
+            override fun onActivitySaveInstanceState(activity: android.app.Activity, outState: android.os.Bundle) {}
+            override fun onActivityDestroyed(activity: android.app.Activity) {}
+        })
         var fallbackJob: kotlinx.coroutines.Job? = null
         applicationScope.launch {
             combine(discovery.peers, pairing.trustedDeviceIds, pairing.state) { peers, trustedIds, state ->
@@ -138,7 +167,14 @@ class SYNQApplication : Application() {
         settings.setDeviceName(value)
         val name = settings.state.value.deviceName
         pairing.updateDeviceName(name)
+        shareManager.updateDeviceName(name)
         discovery.updateDeviceName(name)
+    }
+
+    fun refreshDiscovery() {
+        if (isSYNQEnabled) {
+            discovery.scheduleRefresh(0L)
+        }
     }
 
     private fun publishBattery(intent: Intent) {

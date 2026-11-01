@@ -34,6 +34,8 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import java.io.BufferedWriter
 import java.io.BufferedInputStream
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.io.OutputStream
 import java.math.BigInteger
@@ -154,6 +156,21 @@ class PairingCoordinator(
     private val outgoingLocalFileSources = ConcurrentHashMap<String, File>()
     private val processedSmsSendIds = ConcurrentHashMap.newKeySet<String>()
     val deviceId: String get() = localDeviceId
+    var androidShareManager: AndroidShareManager? = null
+
+    data class QueuedConnectionRequest(
+        val socket: Socket,
+        val deviceId: String,
+        val deviceName: String,
+        val initialLine: String,
+        val input: BufferedInputStream,
+        val timestamp: Long = SystemClock.elapsedRealtime(),
+    )
+
+    private var queuedConnection: QueuedConnectionRequest? = null
+    private val mutableQueuedConnection = MutableStateFlow<QueuedConnectionRequest?>(null)
+    val queuedConnectionRequest: StateFlow<QueuedConnectionRequest?> = mutableQueuedConnection.asStateFlow()
+
     private var server: ServerSocket? = null
     private var session: Session? = null
     private var acceptJob: Job? = null
@@ -183,13 +200,94 @@ class PairingCoordinator(
         acceptJob = scope.launch {
             runCatching {
                 ServerSocket(port).also { server = it }.use { listener ->
-                    while (!listener.isClosed) handle(listener.accept(), initiatedLocally = false, peerHint = null)
+                    while (!listener.isClosed) {
+                        val socket = listener.accept()
+                        scope.launch {
+                            dispatchIncomingSocket(socket)
+                        }
+                    }
                 }
             }.onFailure { if (server?.isClosed == false) fail("Pairing listener failed") }
         }
     }
 
-    fun pair(host: String, port: Int, peerName: String, userInitiated: Boolean = true) {
+    private fun dispatchIncomingSocket(socket: Socket) {
+        socket.keepAlive = true
+        socket.tcpNoDelay = true
+        socket.receiveBufferSize = 256 * 1024
+        socket.sendBufferSize = 256 * 1024
+        socket.soTimeout = 10_000
+
+        val input = BufferedInputStream(socket.getInputStream(), 128 * 1024)
+        val firstLine = runCatching { input.readProtocolLine() }.getOrNull()
+        if (firstLine == null) {
+            runCatching { socket.close() }
+            return
+        }
+
+        val json = runCatching { JSONObject(firstLine) }.getOrNull()
+        val kind = json?.optString("kind").orEmpty()
+
+        if (kind.startsWith("direct.transfer.")) {
+            val share = androidShareManager
+            if (share != null && json != null) {
+                val reader = BufferedReader(InputStreamReader(input, Charsets.UTF_8))
+                share.handleIncomingTransfer(socket, reader, json)
+            } else {
+                runCatching { socket.close() }
+            }
+        } else {
+            val incomingDeviceId = json?.optString("deviceId").orEmpty()
+            val incomingDeviceName = json?.optString("deviceName")?.takeIf { it.isNotBlank() } ?: "Device"
+            val active = session
+            val isConnected = mutableState.value is PairingState.Connected
+            if (isConnected && active != null) {
+                if (incomingDeviceId.isNotEmpty() && incomingDeviceId == active.remoteDeviceId) {
+                    // Current device reconnecting
+                    handle(socket, initiatedLocally = false, peerHint = incomingDeviceName, initialLine = firstLine, existingInput = input)
+                } else {
+                    // Different device attempting to connect while already connected: queue request
+                    queuedConnection?.let { runCatching { it.socket.close() } }
+                    val req = QueuedConnectionRequest(
+                        socket = socket,
+                        deviceId = incomingDeviceId,
+                        deviceName = incomingDeviceName,
+                        initialLine = firstLine,
+                        input = input
+                    )
+                    queuedConnection = req
+                    mutableQueuedConnection.value = req
+                    android.util.Log.i("SYNQ", "Connection from $incomingDeviceName queued while active with ${active.peerName}")
+                }
+            } else {
+                handle(socket, initiatedLocally = false, peerHint = incomingDeviceName, initialLine = firstLine, existingInput = input)
+            }
+        }
+    }
+
+    fun processQueuedConnection(): Boolean {
+        val queued = queuedConnection ?: return false
+        queuedConnection = null
+        mutableQueuedConnection.value = null
+        if (!queued.socket.isClosed && (SystemClock.elapsedRealtime() - queued.timestamp) < 35_000L) {
+            android.util.Log.i("SYNQ", "Activating queued connection from ${queued.deviceName}")
+            scope.launch {
+                handle(queued.socket, initiatedLocally = false, peerHint = queued.deviceName, initialLine = queued.initialLine, existingInput = queued.input)
+            }
+            return true
+        }
+        runCatching { queued.socket.close() }
+        return false
+    }
+
+    fun dismissQueuedConnection() {
+        val queued = queuedConnection
+        queuedConnection = null
+        mutableQueuedConnection.value = null
+        queued?.let { runCatching { it.socket.close() } }
+    }
+
+    fun pair(host: String, port: Int, peerName: String, userInitiated: Boolean = true, qrToken: String? = null) {
         if (userInitiated) automaticReconnectSuppressed = false
         diagnostics.record("pairing", "connection_started")
         android.util.Log.i("SYNQ", "PAIRING started peer=$peerName")
@@ -200,7 +298,7 @@ class PairingCoordinator(
                     connect(java.net.InetSocketAddress(host, port), 6000)
                 }
             }
-                .onSuccess { handle(it, initiatedLocally = true, peerHint = peerName) }
+                .onSuccess { handle(it, initiatedLocally = true, peerHint = peerName, qrToken = qrToken) }
                 .onFailure {
                     if (trustedDeviceIds.value.isNotEmpty() && !userInitiated) {
                         mutableState.value = PairingState.Idle
@@ -231,7 +329,9 @@ class PairingCoordinator(
         clearPingStatus()
         quickActions.reset()
         mutableRemoteFeatures.value = defaultFeatureState()
-        mutableState.value = PairingState.Idle
+        if (!processQueuedConnection()) {
+            mutableState.value = PairingState.Idle
+        }
     }
 
     fun dismiss() {
@@ -246,7 +346,9 @@ class PairingCoordinator(
         clearPingStatus()
         quickActions.reset()
         mutableRemoteFeatures.value = defaultFeatureState()
-        mutableState.value = PairingState.Idle
+        if (!processQueuedConnection()) {
+            mutableState.value = PairingState.Idle
+        }
     }
 
     fun forget(deviceId: String) {
@@ -263,8 +365,15 @@ class PairingCoordinator(
     private fun featureEnabled(feature: SYNQFeature, current: Session? = session): Boolean =
         settings.isEnabled(feature, current?.remoteDeviceId?.takeIf(String::isNotEmpty))
 
-    fun isFeatureAvailable(feature: SYNQFeature): Boolean =
-        effectiveFeatureAvailable(featureEnabled(feature), mutableRemoteFeatures.value[feature] != false)
+    val isAndroidPeerConnected: Boolean get() = session?.isAndroidPeer == true
+
+    fun isFeatureAvailable(feature: SYNQFeature): Boolean {
+        val current = session
+        if (current?.isAndroidPeer == true && feature != SYNQFeature.FILES) {
+            return false
+        }
+        return effectiveFeatureAvailable(featureEnabled(feature), mutableRemoteFeatures.value[feature] != false)
+    }
 
     fun sendClipboard() {
         val clipboard = appContext.getSystemService(ClipboardManager::class.java) ?: return
@@ -777,11 +886,11 @@ class PairingCoordinator(
                 updateFileTransfer(transferId, name, mutableFileTransferStatus.value!!, false)
                 return@launch
             }
-            updateFileTransfer(transferId, name, "Waiting for Mac…", true)
+            updateFileTransfer(transferId, name, "Waiting for ${connectedSession.peerName}…", true)
             if (withTimeoutOrNull(10_000) { accepted.await() } != true) {
                 pendingFileAccepts.remove(transferId)
                 if (transferId in cancelledTransferIds || outgoingFileJobs[transferId] == null) return@launch
-                updateFileTransfer(transferId, name, "Mac did not accept the file", false)
+                updateFileTransfer(transferId, name, "${connectedSession.peerName} did not accept the file", false)
                 return@launch
             }
 
@@ -798,6 +907,7 @@ class PairingCoordinator(
                         val count = input.read(buffer)
                         if (count < 0) break
                         val encrypted = Crypto.encrypt(connectedSession.pairingKey!!, buffer.copyOf(count))
+                        val shouldFlush = (sequence % 16L == 0L)
                         check(connectedSession.send(Message(
                             kind = "files.chunk",
                             sessionId = connectedSession.id,
@@ -806,13 +916,14 @@ class PairingCoordinator(
                             sequence = sequence++,
                             nonce = encrypted.nonce,
                             ciphertext = encrypted.ciphertext,
-                        )))
+                        ), flush = shouldFlush))
                         total += count
                         progress.status(total)?.let {
                             updateFileTransfer(transferId, name, "Sending $name: $it", true)
                         }
                     }
-                    updateFileTransfer(transferId, name, "Verifying $name on Mac…", true)
+                    connectedSession.flush()
+                    updateFileTransfer(transferId, name, "Verifying $name on ${connectedSession.peerName}…", true)
                 } ?: error("File unavailable")
                 val completionPayload = Crypto.encrypt(
                     connectedSession.pairingKey!!,
@@ -835,12 +946,12 @@ class PairingCoordinator(
             if (withTimeoutOrNull(15_000) { completed.await() } == true) {
                 outgoingFileSources.remove(transferId)
                 outgoingLocalFileSources.remove(transferId)
-                updateFileTransfer(transferId, name, "$name saved on Mac", false)
+                updateFileTransfer(transferId, name, "$name saved on ${connectedSession.peerName}", false)
                 diagnostics.record("transfer", "send_completed")
             } else {
                 pendingFileCompletions.remove(transferId)
                 if (transferId in cancelledTransferIds || outgoingFileJobs[transferId] == null) return@launch
-                updateFileTransfer(transferId, name, "Mac did not confirm the saved file", false)
+                updateFileTransfer(transferId, name, "${connectedSession.peerName} did not confirm the saved file", false)
             }
         }
         outgoingFileJobs[transferId] = job
@@ -959,12 +1070,21 @@ class PairingCoordinator(
         mutableState.value = PairingState.Idle
     }
 
-    private fun handle(socket: Socket, initiatedLocally: Boolean, peerHint: String?) {
+    private fun handle(
+        socket: Socket,
+        initiatedLocally: Boolean,
+        peerHint: String?,
+        qrToken: String? = null,
+        initialLine: String? = null,
+        existingInput: BufferedInputStream? = null,
+    ) {
         session?.close()
         socket.keepAlive = true
         socket.tcpNoDelay = true
+        socket.receiveBufferSize = 256 * 1024
+        socket.sendBufferSize = 256 * 1024
         socket.soTimeout = HEARTBEAT_INTERVAL_MILLIS.toInt()
-        val current = Session(socket)
+        val current = Session(socket, existingInput ?: BufferedInputStream(socket.getInputStream(), 128 * 1024))
         current.initiatedLocally = initiatedLocally
         session = current
         mutableRemoteBattery.value = null
@@ -972,7 +1092,7 @@ class PairingCoordinator(
         quickActions.reset()
         mutableRemoteFeatures.value = defaultFeatureState()
         if (initiatedLocally) {
-            current.peerName = peerHint ?: "Mac"
+            current.peerName = peerHint ?: "Device"
             current.keyPair = Crypto.generateKeyPair()
             current.localEphemeralKey = Crypto.encodePublicKey(current.keyPair!!)
             current.id = UUID.randomUUID().toString()
@@ -983,12 +1103,18 @@ class PairingCoordinator(
                     deviceId = localDeviceId,
                     deviceName = localDeviceName,
                     publicKey = current.localEphemeralKey,
+                    token = qrToken,
+                    platform = "android",
                 ),
             )
         } else {
-            mutableState.value = PairingState.Connecting(peerHint ?: "Mac")
+            mutableState.value = PairingState.Connecting(peerHint ?: "Device")
         }
         val result = runCatching {
+            if (initialLine != null) {
+                current.lastReceivedAtMillis = SystemClock.elapsedRealtime()
+                receive(current, Message.decode(initialLine))
+            }
             while (true) {
                 try {
                     val line = current.input.readProtocolLine() ?: break
@@ -1025,9 +1151,11 @@ class PairingCoordinator(
             clearPingStatus()
             quickActions.reset()
             mutableRemoteFeatures.value = defaultFeatureState()
-            mutableState.value = PairingState.Idle
             diagnostics.record("transport", "disconnected", "reconnecting")
             android.util.Log.i("SYNQ", "TRANSPORT disconnected")
+            if (!processQueuedConnection()) {
+                mutableState.value = PairingState.Idle
+            }
         } else if (session === current) {
             result.exceptionOrNull()?.let {
                 android.util.Log.w("SYNQ", "PAIRING disconnected before confirmation")
@@ -1064,9 +1192,10 @@ class PairingCoordinator(
             }
             "pairing.offer" -> {
                 current.id = message.sessionId
-                current.peerName = message.deviceName ?: "Android device"
+                current.peerName = message.deviceName ?: "Device"
                 current.remoteDeviceId = message.deviceId ?: return
                 current.remoteEphemeralKey = message.publicKey ?: return
+                current.remotePlatform = message.platform
                 current.keyPair = Crypto.generateKeyPair()
                 current.localEphemeralKey = Crypto.encodePublicKey(current.keyPair!!)
                 val material = Crypto.pairingMaterial(current.keyPair!!, current.remoteEphemeralKey, current.id)
@@ -1079,6 +1208,7 @@ class PairingCoordinator(
                         deviceId = localDeviceId,
                         deviceName = localDeviceName,
                         publicKey = current.localEphemeralKey,
+                        platform = "android",
                     ),
                 )
                 authenticateOrPrompt(current)
@@ -1088,6 +1218,7 @@ class PairingCoordinator(
                 current.peerName = message.deviceName ?: current.peerName
                 current.remoteDeviceId = message.deviceId ?: return
                 current.remoteEphemeralKey = message.publicKey ?: return
+                current.remotePlatform = message.platform
                 val material = Crypto.pairingMaterial(current.keyPair!!, current.remoteEphemeralKey, current.id)
                 current.code = material.code
                 current.pairingKey = material.key
@@ -1601,14 +1732,17 @@ class PairingCoordinator(
         transfer.progress.status(transfer.receivedSize)?.let {
             updateFileTransfer(transferId, transfer.displayName, "Receiving ${transfer.displayName}: $it", true)
         }
-        current.send(
-            Message(
-                kind = "files.chunk.ack",
-                sessionId = current.id,
-                transferId = transferId,
-                sequence = message.sequence,
-            ),
-        )
+        val seq = message.sequence ?: -1L
+        if (seq >= 0 && (seq % 16L == 0L || transfer.receivedSize >= transfer.expectedSize)) {
+            current.send(
+                Message(
+                    kind = "files.chunk.ack",
+                    sessionId = current.id,
+                    transferId = transferId,
+                    sequence = message.sequence,
+                ),
+            )
+        }
     }
 
     private fun receiveFileComplete(current: Session, message: Message) {
@@ -1849,17 +1983,17 @@ class PairingCoordinator(
     private fun completeIfConfirmed(current: Session) {
         if (current.localConfirmed && current.remoteConfirmed && mutableState.value !is PairingState.Connected) {
             automaticReconnectSuppressed = false
-            trust.save(current.remoteDeviceId, current.peerName, current.remoteIdentityKey!!)
+            if (!current.isAndroidPeer) {
+                trust.save(current.remoteDeviceId, current.peerName, current.remoteIdentityKey!!)
+            }
             mutableState.value = PairingState.Connected(current.remoteDeviceId, current.peerName)
             diagnostics.record("pairing", "connected")
             sendFeatureState()
-            // Favourites are explicitly selected data and can be synced even
-            // when full address-book sync is turned off or not yet permitted.
-            // Sending them here also restores them on reconnect after an app
-            // restart, instead of waiting for the user to edit a favourite.
-            sendFavouritesUpdate(settings.state.value.favouriteContacts)
-            sendQuietModeState()
-            android.util.Log.i("SYNQ", "PAIRING verified peer=${current.peerName}")
+            if (!current.isAndroidPeer) {
+                sendFavouritesUpdate(settings.state.value.favouriteContacts)
+                sendQuietModeState()
+            }
+            android.util.Log.i("SYNQ", "PAIRING verified peer=${current.peerName} isAndroid=${current.isAndroidPeer}")
         }
     }
 
@@ -1907,7 +2041,12 @@ class PairingCoordinator(
         if (mutableState.value !is PairingState.Connected || current.pairingKey == null) return
         val featureValues = JSONObject()
         SYNQFeature.entries.forEach { feature ->
-            featureValues.put(feature.key, settings.isEnabled(feature, current.remoteDeviceId))
+            val enabled = if (current.isAndroidPeer) {
+                feature == SYNQFeature.FILES && settings.isEnabled(feature, current.remoteDeviceId)
+            } else {
+                settings.isEnabled(feature, current.remoteDeviceId)
+            }
+            featureValues.put(feature.key, enabled)
         }
         val payload = JSONObject()
             .put("version", 1)
@@ -2016,13 +2155,17 @@ class PairingCoordinator(
         const val HEARTBEAT_INTERVAL_MILLIS = 10_000L
     }
 
-    private class Session(private val socket: Socket) {
-        val input = BufferedInputStream(socket.getInputStream())
-        private val writer = BufferedWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8))
+    private class Session(
+        private val socket: Socket,
+        val input: BufferedInputStream = BufferedInputStream(socket.getInputStream(), 128 * 1024),
+    ) {
+        private val writer = BufferedWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), 64 * 1024)
         var id = ""
         var peerName = "Device"
         var remoteDeviceId = ""
         var remoteIdentityKey: String? = null
+        var remotePlatform: String? = null
+        val isAndroidPeer: Boolean get() = remotePlatform.equals("android", ignoreCase = true)
         var initiatedLocally = false
         var localEphemeralKey = ""
         var remoteEphemeralKey = ""
@@ -2035,16 +2178,22 @@ class PairingCoordinator(
         @Volatile var heartbeatSupported = false
         private val seenMessageIds = LinkedHashSet<String>()
 
-        @Synchronized fun send(message: Message): Boolean {
+        @Synchronized fun send(message: Message, flush: Boolean = true): Boolean {
             val result = runCatching {
                 writer.write(message.encode())
                 writer.newLine()
-                writer.flush()
+                if (flush) {
+                    writer.flush()
+                }
             }
             result.exceptionOrNull()?.let {
                 android.util.Log.e("SYNQ", "TRANSPORT send failed kind=${message.kind}", it)
             }
             return result.isSuccess
+        }
+
+        @Synchronized fun flush() {
+            runCatching { writer.flush() }
         }
 
         fun close() = runCatching { socket.close() }.let { Unit }
@@ -2059,7 +2208,7 @@ class PairingCoordinator(
     }
 }
 
-private class TransferProgress(private val totalBytes: Long) {
+internal class TransferProgress(private val totalBytes: Long) {
     private var lastUpdateAt = SystemClock.elapsedRealtime()
     private var lastBytes = 0L
     private var smoothedBytesPerSecond = 0.0
@@ -2129,7 +2278,7 @@ private class IncomingFileTransfer(
         }
         uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
             ?: error("Could not allocate download")
-        output = resolver.openOutputStream(uri, "w") ?: run {
+        output = resolver.openOutputStream(uri, "w")?.let { java.io.BufferedOutputStream(it, 256 * 1024) } ?: run {
             resolver.delete(uri, null, null)
             error("Could not open download")
         }
@@ -2137,7 +2286,7 @@ private class IncomingFileTransfer(
 
     @Synchronized fun append(bytes: ByteArray, sequence: Long) {
         check(sequence == nextSequence)
-        check(bytes.size <= 24 * 1024)
+        check(bytes.size <= 64 * 1024)
         check(receivedSize + bytes.size <= expectedSize)
         output.write(bytes)
         digest.update(bytes)
@@ -2184,6 +2333,8 @@ private data class Message(
     val ciphertext: String? = null,
     val transferId: String? = null,
     val sequence: Long? = null,
+    val token: String? = null,
+    val platform: String? = null,
 ) {
     fun encode(): String = JSONObject().apply {
         put("kind", kind)
@@ -2199,6 +2350,8 @@ private data class Message(
         ciphertext?.let { put("ciphertext", it) }
         transferId?.let { put("transferId", it) }
         sequence?.let { put("sequence", it) }
+        token?.let { put("token", it) }
+        platform?.let { put("platform", it) }
     }.toString()
 
     companion object {
@@ -2217,6 +2370,8 @@ private data class Message(
                 ciphertext = it.optString("ciphertext").takeIf(String::isNotEmpty),
                 transferId = it.optString("transferId").takeIf(String::isNotEmpty),
                 sequence = if (it.has("sequence")) it.getLong("sequence") else null,
+                token = it.optString("token").takeIf(String::isNotEmpty),
+                platform = it.optString("platform").takeIf(String::isNotEmpty),
             )
         }
     }
@@ -2273,8 +2428,10 @@ internal object Crypto {
         )
     }.getOrDefault(false)
 
+    private val secureRandom = SecureRandom()
+
     fun encrypt(key: ByteArray, plaintext: ByteArray): EncryptedPayload {
-        val nonce = ByteArray(12).also(SecureRandom()::nextBytes)
+        val nonce = ByteArray(12).also(secureRandom::nextBytes)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
             init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
         }
