@@ -127,7 +127,7 @@ SYNQ is an independent open-source project created and maintained by **Sanket Bh
 
 - [Browse the source](https://github.com/bharadwajsanket/SYNQ)
 - [Report a bug or request a feature](https://github.com/bharadwajsanket/SYNQ/issues)
-- [Read the release notes](RELEASE_NOTES.md)
+- [Read the changelog](CHANGELOG.md)
 - [Read the license](LICENSE)
 
 Contributions and clear bug reports are welcome. Please review the [security policy](SECURITY.md) before reporting a vulnerability.

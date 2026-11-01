@@ -68,5 +68,5 @@ When these are provided, `package-release.sh` submits the DMG to Apple via `nota
 3. Update version metadata:
    - `macos/Resources/Info.plist`: `CFBundleShortVersionString` and `CFBundleVersion`.
    - `android/app/build.gradle.kts`: `versionName` and `versionCode`.
-4. Review and update `RELEASE_NOTES.md` with relevant user-facing changes.
+4. Review and update `CHANGELOG.md` with relevant user-facing changes.
 5. Create and push a semver git tag (e.g., `v1.0.0`).
