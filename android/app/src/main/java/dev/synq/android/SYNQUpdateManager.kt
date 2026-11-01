@@ -33,6 +33,7 @@ data class UpdateManifest(
     val downloadUrl: String,
     val size: Long,
     val sha256: String,
+    val certificateFingerprint: String? = null,
 )
 
 sealed interface UpdateStatus {
@@ -199,7 +200,8 @@ class SYNQUpdateManager(private val context: Context) {
             val text = conn.inputStream.bufferedReader().use { it.readText() }
             val json = JSONObject(text)
 
-            val androidObj = json.optJSONObject("android")
+            val androidObj = json.optJSONObject("platforms")?.optJSONObject("android")
+                ?: json.optJSONObject("android")
                 ?: throw IllegalArgumentException("Manifest is missing 'android' update section")
 
             return UpdateManifest(
@@ -209,7 +211,8 @@ class SYNQUpdateManager(private val context: Context) {
                 releaseNotes = json.optString("releaseNotes", "Performance and stability updates"),
                 downloadUrl = androidObj.optString("downloadUrl"),
                 size = androidObj.optLong("size", 0L),
-                sha256 = androidObj.optString("sha256", "").lowercase().trim()
+                sha256 = androidObj.optString("sha256", "").lowercase().trim(),
+                certificateFingerprint = androidObj.optString("certificateFingerprint").takeIf { it.isNotBlank() }?.lowercase()?.trim()
             )
         } finally {
             conn.disconnect()
@@ -273,8 +276,14 @@ class SYNQUpdateManager(private val context: Context) {
                 throw SecurityException("Cryptographic checksum mismatch! Expected ${manifest.sha256}, got $actualHash")
             }
 
-            // 3. Verify Android package integrity and identity
-            val pkgInfo = context.packageManager.getPackageArchiveInfo(partFile.absolutePath, 0)
+            // 3. Verify Android package integrity, identity, and certificate
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                PackageManager.GET_SIGNING_CERTIFICATES
+            } else {
+                @Suppress("DEPRECATION")
+                PackageManager.GET_SIGNATURES
+            }
+            val pkgInfo = context.packageManager.getPackageArchiveInfo(partFile.absolutePath, flags)
                 ?: run {
                     partFile.delete()
                     throw SecurityException("Downloaded archive is not a valid Android APK")
@@ -283,6 +292,42 @@ class SYNQUpdateManager(private val context: Context) {
             if (pkgInfo.packageName != context.packageName) {
                 partFile.delete()
                 throw SecurityException("Downloaded package '${pkgInfo.packageName}' does not match '${context.packageName}'")
+            }
+
+            // Verify certificate fingerprint against current installed app
+            val downloadedSignatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pkgInfo.signingInfo?.apkContentsSigners
+            } else {
+                @Suppress("DEPRECATION")
+                pkgInfo.signatures
+            }
+
+            val downloadedCertSha256 = downloadedSignatures?.firstOrNull()?.toByteArray()?.let { bytes ->
+                MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+            }?.lowercase()
+
+            val currentSignatures = try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    context.packageManager.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES).signingInfo?.apkContentsSigners
+                } else {
+                    @Suppress("DEPRECATION")
+                    context.packageManager.getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES).signatures
+                }
+            } catch (_: Exception) { null }
+
+            val currentCertSha256 = currentSignatures?.firstOrNull()?.toByteArray()?.let { bytes ->
+                MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+            }?.lowercase()
+
+            if (downloadedCertSha256 != null && currentCertSha256 != null && downloadedCertSha256 != currentCertSha256) {
+                partFile.delete()
+                throw SecurityException("Signing certificate mismatch! Downloaded cert ($downloadedCertSha256) cannot update installed app ($currentCertSha256)")
+            }
+
+            if (manifest.certificateFingerprint != null && downloadedCertSha256 != null &&
+                manifest.certificateFingerprint != downloadedCertSha256) {
+                partFile.delete()
+                throw SecurityException("Manifest certificate mismatch! Expected ${manifest.certificateFingerprint}, got $downloadedCertSha256")
             }
 
             if (targetFile.exists()) targetFile.delete()

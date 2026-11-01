@@ -1,6 +1,6 @@
 import SwiftUI
 
-public struct AnimatedWelcomeView: View {
+struct AnimatedWelcomeView: View {
     let onGetStarted: () -> Void
     var onPairWithQR: (() -> Void)? = nil
 
@@ -8,12 +8,12 @@ public struct AnimatedWelcomeView: View {
     @State private var hasAppeared = false
     @State private var pulsePhase: CGFloat = 0.0
 
-    public init(onGetStarted: @escaping () -> Void, onPairWithQR: (() -> Void)? = nil) {
+    init(onGetStarted: @escaping () -> Void, onPairWithQR: (() -> Void)? = nil) {
         self.onGetStarted = onGetStarted
         self.onPairWithQR = onPairWithQR
     }
 
-    public var body: some View {
+    var body: some View {
         VStack(spacing: 18) {
             // Header: App icon + title
             VStack(spacing: 6) {
