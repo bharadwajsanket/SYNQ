@@ -33,7 +33,7 @@ jobs:
           if-no-files-found: ignore
       - uses: actions/upload-artifact@v7
         with:
-          name: Bridgey-Android-debug
+          name: SYNQ-Android-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
 
   macos:
@@ -53,9 +53,9 @@ jobs:
         working-directory: macos
       - run: ./build-app.sh
         working-directory: macos
-      - run: ditto -c -k --sequesterRsrc --keepParent .build/debug/Bridgey.app BridgeyMac-debug.zip
+      - run: ditto -c -k --sequesterRsrc --keepParent .build/debug/SYNQ.app SYNQMac-debug.zip
         working-directory: macos
       - uses: actions/upload-artifact@v7
         with:
-          name: Bridgey-macOS-debug
-          path: macos/BridgeyMac-debug.zip
+          name: SYNQ-macOS-debug
+          path: macos/SYNQMac-debug.zip

@@ -19,3 +19,4 @@ swift build --build-tests \
 
 echo "==> Running SYNQMac test bundle..."
 "$XCODE_DIR/usr/bin/xctest" .build/out/Products/Debug/SYNQMacTests.xctest
+

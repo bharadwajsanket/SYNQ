@@ -363,13 +363,9 @@ private struct SYNQPanel: View {
             }
 
             Divider().padding(.top, 10)
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 footerButton("Settings", icon: "gearshape", action: onOpenSettings)
                     .help("Settings")
-                footerButton("Updates", icon: "arrow.triangle.2.circlepath") {
-                    SYNQUpdateManager.shared.checkForUpdates()
-                }
-                .help("Check for updates")
                 footerButton("Guest Share", icon: "person.crop.circle.badge.plus") {
                     if !pairing.guestTransferManager.isSessionActive {
                         pairing.guestTransferManager.startSession()
@@ -821,6 +817,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
     case notifications = "Notifications"
     case transfers = "Transfers"
     case privacy = "Privacy"
+    case updates = "Software Update"
     case about = "About"
 
     var id: String { rawValue }
@@ -835,6 +832,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .notifications: return "bell.badge"
         case .transfers: return "arrow.left.arrow.right"
         case .privacy: return "hand.raised"
+        case .updates: return "arrow.triangle.2.circlepath.circle"
         case .about: return "info.circle"
         }
     }
@@ -875,6 +873,7 @@ private struct SettingsView: View {
     @ObservedObject var discovery: BonjourDiscovery
     @ObservedObject var pairing: PairingCoordinator
     @ObservedObject var settings: SYNQSettings
+    @ObservedObject private var updateManager = SYNQUpdateManager.shared
     @State private var selectedCategory: SettingsCategory? = .general
     @State private var editedName = ""
     @State private var phoneLinkStatus: String?
@@ -918,6 +917,8 @@ private struct SettingsView: View {
                 transfersSection
             case .privacy:
                 privacySection
+            case .updates:
+                updatesSection
             case .about:
                 aboutSection
             }
@@ -1168,6 +1169,282 @@ private struct SettingsView: View {
     }
 
     @ViewBuilder
+    private var updatesSection: some View {
+        Section("Update Preferences") {
+            Picker("Update behavior", selection: $updateManager.preference) {
+                ForEach(UpdatePreference.allCases) { pref in
+                    Text(pref.title).tag(pref)
+                }
+            }
+            .pickerStyle(.radioGroup)
+
+            Text(updateManager.preference.description)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        Section("Software Version") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .center, spacing: 12) {
+                    Image(nsImage: makeSynqDeviceIcon(size: 44))
+                        .frame(width: 44, height: 44)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("SYNQ for macOS")
+                            .font(.headline)
+                        Text("Current Version \(updateManager.currentVersion) (Build \(updateManager.currentBuild))")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    updateStatusBadge
+                }
+                .padding(.vertical, 4)
+
+                if let message = updateManager.lastCheckMessage {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let date = updateManager.lastCheckDate {
+                    Text("Last checked: \(date.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+
+        Section("Update Actions") {
+            switch updateManager.status {
+            case .idle, .upToDate, .error:
+                HStack(spacing: 12) {
+                    Button(action: { updateManager.checkOnly() }) {
+                        Label("Check for Updates", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+
+                    if case let .error(msg) = updateManager.status {
+                        Text(msg)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+
+            case .checking:
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking for updates…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+            case let .updateAvailable(manifest):
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("SYNQ \(manifest.version) Available")
+                                .font(.headline)
+                            if !manifest.releaseDate.isEmpty {
+                                Text("Released \(manifest.releaseDate)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        if manifest.size > 0 {
+                            Text(String(format: "%.1f MB", Double(manifest.size) / (1024.0 * 1024.0)))
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Color.secondary.opacity(0.12), in: Capsule())
+                        }
+                    }
+
+                    if !manifest.releaseNotes.isEmpty {
+                        GroupBox("Release Notes") {
+                            ScrollView {
+                                Text(manifest.releaseNotes)
+                                    .font(.caption)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            }
+                            .frame(maxHeight: 120)
+                        }
+                    }
+
+                    HStack(spacing: 10) {
+                        Button(action: { updateManager.downloadAndInstall(manifest: manifest) }) {
+                            Label("Download & Install", systemImage: "arrow.down.circle.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+
+                        Button(action: { updateManager.downloadOnly(manifest: manifest) }) {
+                            Label("Only Download", systemImage: "arrow.down.to.line")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+                    }
+                }
+
+            case let .downloading(progress, bytes, total, target):
+                VStack(alignment: .leading, spacing: 8) {
+                    ProgressView(
+                        value: total > 0 ? Double(bytes) : 0,
+                        total: total > 0 ? Double(total) : 1
+                    ) {
+                        HStack {
+                            Text(target == .install ? "Downloading update installer…" : "Downloading update disk image…")
+                                .font(.subheadline)
+                            Spacer()
+                            if total > 0 {
+                                Text("\(Int(progress * 100))%")
+                                    .font(.caption.monospacedDigit())
+                            }
+                        }
+                    }
+                    HStack {
+                        if total > 0 {
+                            Text(String(format: "%.1f MB of %.1f MB", Double(bytes) / (1024.0 * 1024.0), Double(total) / (1024.0 * 1024.0)))
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Cancel", role: .cancel) {
+                            updateManager.cancelDownload()
+                        }
+                        .controlSize(.small)
+                    }
+                }
+
+            case .verifying:
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Verifying cryptographic SHA-256 signature…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+            case let .readyToInstall(dmgURL, version):
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        Text("SYNQ \(version) ready to install")
+                            .font(.headline)
+                    }
+                    Text("The verified disk image is mounted. Drag SYNQ to Applications to complete update.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 10) {
+                        Button("Open Installer Volume") {
+                            updateManager.installUpdate(dmgURL: dmgURL)
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Button("Show Disk Image in Finder") {
+                            updateManager.revealDownloadedFile(dmgURL: dmgURL)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+
+            case let .downloaded(dmgURL, version):
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        Text("SYNQ \(version) downloaded")
+                            .font(.headline)
+                    }
+                    Text("The disk image has been saved to your Downloads folder.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 10) {
+                        Button("Reveal in Finder") {
+                            updateManager.revealDownloadedFile(dmgURL: dmgURL)
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Button("Mount & Install") {
+                            updateManager.installUpdate(dmgURL: dmgURL)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var updateStatusBadge: some View {
+        switch updateManager.status {
+        case .idle:
+            Text("Ready")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.secondary.opacity(0.12), in: Capsule())
+        case .checking:
+            Text("Checking…")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.blue)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.blue.opacity(0.12), in: Capsule())
+        case .updateAvailable:
+            Text("Update Available")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.orange.opacity(0.15), in: Capsule())
+        case .downloading:
+            Text("Downloading")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.blue)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.blue.opacity(0.12), in: Capsule())
+        case .verifying:
+            Text("Verifying SHA-256")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.purple)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.purple.opacity(0.12), in: Capsule())
+        case .readyToInstall, .downloaded:
+            Text("Ready")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.green)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.green.opacity(0.15), in: Capsule())
+        case .upToDate:
+            Text("Up to Date")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.green)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.green.opacity(0.15), in: Capsule())
+        case .error:
+            Text("Offline / Notice")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.secondary.opacity(0.12), in: Capsule())
+        }
+    }
+
+    @ViewBuilder
     private var aboutSection: some View {
         Section {
             VStack(spacing: 12) {
@@ -1184,8 +1461,8 @@ private struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
 
-                Button("Check for Updates…") {
-                    SYNQUpdateManager.shared.checkForUpdates()
+                Button("Software Update…") {
+                    selectedCategory = .updates
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)

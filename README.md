@@ -37,6 +37,7 @@ Pair your devices once. SYNQ reconnects when they’re back on the same network.
 | **Phone notifications**<br>See Android notifications in macOS Notification Center and use supported quick replies. | **Calls & SMS from Mac**<br>Place calls and compose SMS text messages directly to contacts from the menu bar. |
 | **QR Code Pairing**<br>Scan from Android to pair in seconds, verified with mutual 6-digit confirmation codes. | **Remote File Browser**<br>Explore Android files and download documents on demand from your Mac. |
 | **Guest Share**<br>Let a nearby guest send files to your Mac through a temporary QR link, without pairing. | **Find your phone**<br>Ring it or send a quiet ping from your Mac with clear status feedback. |
+| **In-App OTA Updates**<br>Cryptographically verified updates with SHA-256 and signing certificate fingerprint validation. | **Dark-First Modern UI**<br>Apple-inspired design on macOS and Material 3 Expressive on Android with categorized settings. |
 
 ## Get SYNQ
 

@@ -35,12 +35,12 @@ jobs:
           APK="android/app/build/outputs/apk/release/app-release.apk"
           test -f "$APK"
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK"
-          cp "$APK" Bridgey-Android-release-candidate.apk
-          shasum -a 256 Bridgey-Android-release-candidate.apk > SHA256SUMS-Android.txt
+          cp "$APK" SYNQ-Android-release-candidate.apk
+          shasum -a 256 SYNQ-Android-release-candidate.apk > SHA256SUMS-Android.txt
       - uses: actions/upload-artifact@v7
         with:
-          name: Bridgey-Android-release-candidate
+          name: SYNQ-Android-release-candidate
           path: |
-            Bridgey-Android-release-candidate.apk
+            SYNQ-Android-release-candidate.apk
             SHA256SUMS-Android.txt
           retention-days: 7

@@ -10,7 +10,7 @@
       "packageName": "bharadwaj.synq.bridge",
       "minSdk": 26,
       "targetSdk": 36,
-      "downloadUrl": "https://github.com/bharadwajsanket/SYNQ/releases/download/v3.5.4/SYNQ-v3.5.4-release.apk",
+      "downloadUrl": "https://github.com/bharadwajsanket/SYNQ/releases/download/v3.5.4/SYNQ-Android.apk",
       "size": 1610556,
       "sha256": "ad4f790929120004b52f1dbdb98c0510e387aedee4a42cc18893d09a74475b52",
       "certificateFingerprint": "ad2eeabb5612c89587df603ab55cc8d5870824adbb793602474913c2266a4484"
@@ -19,8 +19,8 @@
       "version": "3.5.4",
       "buildNumber": "35",
       "downloadUrl": "https://github.com/bharadwajsanket/SYNQ/releases/download/v3.5.4/SYNQ-macOS.dmg",
-      "size": 2479552,
-      "sha256": "df623ce8ebf6c3d7bddb1f2a3bbc851aba0ae145696059cadbe390f660b96c8b"
+      "size": 2554320,
+      "sha256": "3b9fa62dcdc9922713a322c337be71c923b52d679e85cb356ff9d365273779a9"
     }
   }
 }

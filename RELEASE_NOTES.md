@@ -1,12 +1,34 @@
 # SYNQ v3.5.4 — Release Notes
 
-Release v3.5.4 introduces high-throughput pipelined file streaming, instant QR-based pairing with anti-SSRF protection, an animated first-launch welcome card, direct Android-to-Android encrypted file transfers, and a dynamic menu-bar connection indicator with reduced-motion support.
+Release v3.5.4 introduces an Apple and Material 3 dark-first redesign, end-to-end cryptographic OTA updates for Android and macOS, high-throughput pipelined file streaming, instant QR-based pairing with anti-SSRF protection, direct Android-to-Android encrypted file transfers, sequential NSD resolve queues, and a dynamic menu-bar connection indicator.
 
 SYNQ is developed and maintained by **Sanket Bharadwaj**.
 
 ---
 
 ## What's New in v3.5.4
+
+### UI Redesign & Settings Categorization
+- **Apple & Material 3 Dark Theme:** Redesigned the Android dashboard, device list, and controls to match modern dark-first aesthetics with clean surfaces and balanced typography.
+- **5-Section Settings Architecture:** Categorized settings into clear, focused modules:
+  - **Sync:** Clipboard synchronization, automatic sync toggle, and notification mirroring.
+  - **Calls & Contacts:** Contact directory sync, masked phone numbers (`+919•••••6264`) for privacy, and call permissions.
+  - **Privacy & Local Security:** End-to-end encryption details, SAS code verification, and local-only network boundary notice.
+  - **General:** Device name customization, dark/light theme options, and battery optimization tips.
+  - **About:** Version info, permission overview, GitHub repository links, and OTA Software Update.
+- **Streamlined macOS Popover:** Reverted the menu bar popover footer to a spacious 3-button layout (`Settings`, `Guest Share`, `Quit`), eliminating label truncation.
+
+### Cryptographic Over-The-Air (OTA) Updates
+- **Android In-App Updates:** Integrated `SYNQUpdateManager` with background download progress, SHA-256 payload integrity check, release signing certificate fingerprint verification, and seamless installation via Android `PackageInstaller`.
+- **macOS Software Update Settings:** Added dedicated Software Update preferences in Settings with 3 distinct options:
+  - **Download & Install:** Automatically downloads the verified DMG, validates SHA-256, mounts the volume, and opens the installer.
+  - **Only Download:** Downloads and cryptographically verifies the update package, saving it directly to `~/Downloads` and revealing it in Finder.
+  - **Check & Inform:** Checks the remote update manifest, compares semantic versions, and provides complete release details and notes without downloading.
+- **Graceful Offline & Network Handling:** Completely eliminated disruptive modal alert sheets; update status and network notices are displayed non-intrusively inline.
+
+### Sequential NSD Discovery & QR Preview Fix
+- **Sequential Resolve Queue:** Fixed Android Network Service Discovery (NSD) listener concurrency, preventing `FAILURE_ALREADY_ACTIVE` errors and eliminating duplicate phantom device listings on the home dashboard.
+- **Aspect-Ratio Corrected QR Scanner:** Dynamically computes optimal Camera2 preview dimensions matching physical sensor output, eliminating camera feed stretching.
 
 ### Phase 1 — High-Throughput Streaming File Transfers
 - **Sliding-Window Pipelined Streaming:** Replaced synchronous stop-and-wait chunk acknowledgments with an unacknowledged sliding window (up to 64 in-flight chunks), eliminating per-chunk latency stalls.

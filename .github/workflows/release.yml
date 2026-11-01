@@ -81,7 +81,7 @@ jobs:
         run: ./package-release.sh
       - uses: actions/upload-artifact@v7
         with:
-          name: Bridgey-macOS
+          name: SYNQ-macOS
           path: macos/dist/*
 
   publish:
