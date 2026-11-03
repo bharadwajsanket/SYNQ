@@ -97,9 +97,9 @@ SYNQ 4.5.4 delivers a major media integration milestone, bringing native **Apple
 All official release artifacts are cryptographically hashed:
 
 ```text
-54967fc0ae8fab2fe313f7ca6508dd9591c38f33ff7c585cd4ab9811f6fb5ec2  SYNQ-macOS.dmg
-0d650af1fdfe2b18ec0b67ed30ff894c01a746f9edf49a2ab934bd6feabe9d05  SYNQ-macOS.zip
-a77814637c1334e3b3261070bc68d8048de3d15fe1849e55d08a7ec89eafcc7e  SYNQ-Android.apk
+523609c6286a6e4a2c2850c5b686d2612c00a3c1a5efce17f493e0b3242b0abd  SYNQ-macOS.dmg
+75c83f8431fb4e7b3d99e54d0307afcf8e0f51369e264f39b08266461c83d847  SYNQ-macOS.zip
+d3df60e04625d850f7974beec267d5c41bceccd0ddc3b92627917888e19e4840  SYNQ-Android.apk
 ```
 
 ### Upgrading
