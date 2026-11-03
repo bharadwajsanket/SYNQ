@@ -65,4 +65,57 @@ final class NotificationCallTests: XCTestCase {
 
         XCTAssertFalse(shouldSuppressNotificationInQuietMode(quietModeEnabled: false, callType: "incoming"))
     }
+
+    func testResolvedAppleCallActionsAlwaysProvidesThreeControlsForOngoingCall() {
+        // Ongoing call with only Hang Up (typical Android telephony notification)
+        let callWithHangUp = RemoteCallStatus(
+            notificationID: "notif-123",
+            deviceID: "dev-1",
+            applicationName: "Phone",
+            caller: "Mama",
+            detail: "Ongoing Wi-Fi call",
+            type: "ongoing",
+            actions: [RemoteCallAction(id: "hang-1", title: "Hang Up")]
+        )
+        let resolved = resolvedAppleCallActions(for: callWithHangUp)
+        XCTAssertEqual(resolved.count, 3)
+        XCTAssertTrue(resolved[0].title.localizedCaseInsensitiveContains("mute"))
+        XCTAssertTrue(resolved[1].title.localizedCaseInsensitiveContains("speaker"))
+        XCTAssertEqual(resolved[2].id, "hang-1")
+        XCTAssertTrue(resolved[2].title.localizedCaseInsensitiveContains("hang"))
+
+        // Ongoing call with empty actions
+        let callWithNoActions = RemoteCallStatus(
+            notificationID: "notif-456",
+            deviceID: "dev-1",
+            applicationName: "Phone",
+            caller: "Baba",
+            detail: "Ongoing call",
+            type: "ongoing",
+            actions: []
+        )
+        let resolvedEmpty = resolvedAppleCallActions(for: callWithNoActions)
+        XCTAssertEqual(resolvedEmpty.count, 3)
+        XCTAssertTrue(resolvedEmpty[0].title.localizedCaseInsensitiveContains("mute"))
+        XCTAssertTrue(resolvedEmpty[1].title.localizedCaseInsensitiveContains("speaker"))
+        XCTAssertTrue(resolvedEmpty[2].title.localizedCaseInsensitiveContains("end"))
+
+        // Incoming call preserves normal answer/decline ordering
+        let incomingCall = RemoteCallStatus(
+            notificationID: "notif-789",
+            deviceID: "dev-1",
+            applicationName: "Phone",
+            caller: "Friend",
+            detail: "Incoming call",
+            type: "incoming",
+            actions: [
+                RemoteCallAction(id: "ans", title: "Answer"),
+                RemoteCallAction(id: "dec", title: "Decline"),
+            ]
+        )
+        let resolvedIncoming = resolvedAppleCallActions(for: incomingCall)
+        XCTAssertEqual(resolvedIncoming.count, 2)
+        XCTAssertEqual(resolvedIncoming[0].id, "dec")
+        XCTAssertEqual(resolvedIncoming[1].id, "ans")
+    }
 }

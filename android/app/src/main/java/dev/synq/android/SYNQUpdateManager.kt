@@ -66,9 +66,9 @@ class SYNQUpdateManager(private val context: Context) {
                 @Suppress("DEPRECATION")
                 context.packageManager.getPackageInfo(context.packageName, 0)
             }
-            pInfo.versionName ?: "3.5.4"
+            pInfo.versionName ?: "4.5.4"
         } catch (_: Exception) {
-            "3.5.4"
+            "4.5.4"
         }
     }
 
@@ -205,8 +205,8 @@ class SYNQUpdateManager(private val context: Context) {
                 ?: throw IllegalArgumentException("Manifest is missing 'android' update section")
 
             return UpdateManifest(
-                version = androidObj.optString("version", json.optString("version", "3.5.4")),
-                versionCode = androidObj.optInt("versionCode", json.optInt("versionCode", 35)),
+                version = androidObj.optString("version", json.optString("version", "4.5.4")),
+                versionCode = androidObj.optInt("versionCode", json.optInt("versionCode", 45)),
                 releaseDate = json.optString("releaseDate", ""),
                 releaseNotes = json.optString("releaseNotes", "Performance and stability updates"),
                 downloadUrl = androidObj.optString("downloadUrl"),

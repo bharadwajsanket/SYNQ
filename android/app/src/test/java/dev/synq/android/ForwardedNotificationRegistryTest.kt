@@ -126,7 +126,7 @@ class ForwardedNotificationRegistryTest {
 
     @Test fun systemCallControlsMatchTheResolvedCallState() {
         assertTrue(systemCallActionTitles("incoming", 36) == listOf("Decline", "Answer"))
-        assertTrue(systemCallActionTitles("ongoing", 36) == listOf("Hang Up"))
+        assertTrue(systemCallActionTitles("ongoing", 36) == listOf("Mute", "Speaker", "Hang Up"))
         assertTrue(systemCallActionTitles("screening", 36) == listOf("Hang Up", "Answer"))
         assertTrue(systemCallActionTitles("incoming", 26) == listOf("Answer"))
         assertTrue(systemCallActionTitles("unknown", 36).isEmpty())

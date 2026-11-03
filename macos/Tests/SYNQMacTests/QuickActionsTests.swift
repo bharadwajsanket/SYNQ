@@ -89,4 +89,128 @@ final class QuickActionsTests: XCTestCase {
         ])
         XCTAssertEqual(actions.status, "Link opened on Android")
     }
+
+    func testMediaPlayerPropertiesAndDefaults() {
+        XCTAssertEqual(MediaPlayer.allCases, [.auto, .music, .spotify, .off])
+        XCTAssertEqual(MediaPlayer.auto.title, "Auto-detect")
+        XCTAssertNil(MediaPlayer.auto.bundleID)
+        XCTAssertEqual(MediaPlayer.music.title, "Music")
+        XCTAssertEqual(MediaPlayer.music.bundleID, "com.apple.Music")
+        XCTAssertEqual(MediaPlayer.spotify.title, "Spotify")
+        XCTAssertEqual(MediaPlayer.spotify.bundleID, "com.spotify.client")
+        XCTAssertEqual(MediaPlayer.off.title, "Off")
+        XCTAssertNil(MediaPlayer.off.bundleID)
+    }
+
+    func testMediaSnapshotPayloadFormatting() {
+        let source1 = MediaSourceItem(
+            id: "com.google.Chrome",
+            name: "Chrome",
+            title: "YouTube Video",
+            artist: "Creator",
+            playing: true,
+            position: 12,
+            duration: 180,
+            volume: 75
+        )
+        let source2 = MediaSourceItem(
+            id: "com.apple.Music",
+            name: "Apple Music",
+            title: "Album Song",
+            artist: "Band",
+            playing: false,
+            position: 0,
+            duration: 210,
+            volume: 60
+        )
+        let snapshot = MediaSnapshot(
+            title: "YouTube Video",
+            artist: "Creator",
+            appName: "Chrome",
+            playing: true,
+            position: 12,
+            duration: 180,
+            volume: 75,
+            detail: "",
+            artwork: "base64artwork",
+            selectedSourceId: "com.google.Chrome",
+            sources: [source1, source2]
+        )
+        let payload = snapshot.payload(player: .auto)
+        XCTAssertEqual(payload["version"] as? Int, 1)
+        XCTAssertEqual(payload["player"] as? String, "Chrome")
+        XCTAssertEqual(payload["title"] as? String, "YouTube Video")
+        XCTAssertEqual(payload["artist"] as? String, "Creator")
+        XCTAssertEqual(payload["playing"] as? Bool, true)
+        XCTAssertEqual(payload["position"] as? Int, 12)
+        XCTAssertEqual(payload["duration"] as? Int, 180)
+        XCTAssertEqual(payload["volume"] as? Int, 75)
+        XCTAssertEqual(payload["artwork"] as? String, "base64artwork")
+        XCTAssertEqual(payload["selectedSourceId"] as? String, "com.google.Chrome")
+        let sources = payload["sources"] as? [[String: Any]]
+        XCTAssertEqual(sources?.count, 2)
+        XCTAssertEqual(sources?[0]["name"] as? String, "Chrome")
+        XCTAssertEqual(sources?[1]["name"] as? String, "Apple Music")
+    }
+
+    @MainActor func testMediaControllerOffPlayerReturnsNilResolution() {
+        let controller = MediaController()
+        controller.player = .off
+        XCTAssertNil(controller.resolvedPlayer())
+    }
+
+    @MainActor func testMediaFeatureEnabledByDefaultInSettings() {
+        let settings = SYNQSettings()
+        XCTAssertEqual(settings.globalFeatures[.media], true)
+    }
+
+    @MainActor func testMediaPermissionToggleGatesCommands() {
+        let controller = MediaController()
+        var allowed = false
+        controller.allowed = { allowed }
+
+        var executed = false
+        controller.command(action: "toggle", value: "") { success in
+            executed = success
+        }
+        XCTAssertFalse(executed, "Commands must be rejected when media permission is false")
+
+        allowed = true
+        controller.command(action: "selectSource", value: "com.google.Chrome") { success in
+            executed = success
+        }
+        XCTAssertTrue(executed, "selectSource should succeed when allowed")
+        XCTAssertEqual(controller.manualSelectedSourceId, "com.google.Chrome")
+
+        controller.command(action: "selectSource", value: "auto") { _ in }
+        XCTAssertNil(controller.manualSelectedSourceId, "Selecting auto clears manual selection")
+    }
+
+    @MainActor func testManualSourceSelectionPersistsAndDisappearsCleanly() {
+        let controller = MediaController()
+        controller.allowed = { true }
+        controller.selectSource(id: "com.pauldavis.crest")
+        XCTAssertEqual(controller.manualSelectedSourceId, "com.pauldavis.crest")
+
+        controller.selectSource(id: "auto")
+        XCTAssertNil(controller.manualSelectedSourceId)
+    }
+
+    func testMediaSnapshotMissingArtworkAndDurationHandled() {
+        let snapshot = MediaSnapshot(
+            title: "Stream Track",
+            artist: "Live Radio",
+            appName: "Safari",
+            playing: true,
+            position: 0,
+            duration: 0,
+            volume: 100,
+            detail: "",
+            artwork: nil
+        )
+        let payload = snapshot.payload(player: .auto)
+        XCTAssertNil(payload["artwork"])
+        XCTAssertEqual(payload["duration"] as? Int, 0)
+        XCTAssertEqual(payload["player"] as? String, "Safari")
+    }
 }

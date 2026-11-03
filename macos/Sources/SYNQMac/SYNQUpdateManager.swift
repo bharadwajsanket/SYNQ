@@ -111,7 +111,7 @@ public final class SYNQUpdateManager: ObservableObject {
     public static let manifestURL = URL(string: "https://raw.githubusercontent.com/bharadwajsanket/SYNQ/main/release-manifest.json")!
 
     public var currentVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "3.5.4"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "4.5.4"
     }
 
     public var currentBuild: String {

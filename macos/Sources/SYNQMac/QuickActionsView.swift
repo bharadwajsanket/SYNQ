@@ -19,18 +19,34 @@ struct QuickActionsPanel: View {
 
 struct MediaSettingsView: View {
     @ObservedObject var media: MediaController
+    @ObservedObject var settings: SYNQSettings
+
     var body: some View {
         Section("Media") {
-            Text("Enable Media controls above, then choose a player. macOS asks for Automation access to that app. Open the player on your Mac first.")
+            Toggle("Allow connected devices to control media", isOn: Binding(
+                get: { settings.globalFeatures[.media] != false },
+                set: { enabled in
+                    settings.setGlobal(.media, enabled: enabled)
+                    if !enabled {
+                        media.reset()
+                    } else {
+                        media.refresh()
+                    }
+                }
+            ))
+            Text("Let paired devices view and control media playing on this Mac.")
                 .font(.caption).foregroundStyle(.secondary)
-            Picker("Player", selection: $media.player) {
-                ForEach(MediaPlayer.allCases) { Text($0.title).tag($0) }
+
+            if settings.globalFeatures[.media] != false {
+                Picker("Player", selection: $media.player) {
+                    ForEach(MediaPlayer.allCases) { Text($0.title).tag($0) }
+                }
+                Toggle("Pause media during phone calls", isOn: $media.pauseForCalls)
+                Text("Pauses the selected player when a call rings or becomes active. Playback stays paused after the call; resume it when ready.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if !media.snapshot.detail.isEmpty { Text(media.snapshot.detail).font(.caption).foregroundStyle(.secondary) }
+                Button("Refresh player", action: media.refresh)
             }
-            Toggle("Pause media during phone calls", isOn: $media.pauseForCalls)
-            Text("Pauses the selected player when a call rings or becomes active. Playback stays paused after the call; resume it when ready.")
-                .font(.caption).foregroundStyle(.secondary)
-            if !media.snapshot.detail.isEmpty { Text(media.snapshot.detail).font(.caption).foregroundStyle(.secondary) }
-            Button("Refresh player", action: media.refresh)
         }
     }
 }

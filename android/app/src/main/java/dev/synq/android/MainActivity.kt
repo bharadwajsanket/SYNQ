@@ -99,6 +99,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -121,6 +122,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.synq.core.discovery.DiscoveredPeer
 import dev.synq.core.discovery.NsdDiscoveryService
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 
 // Japanese stationery-inspired palette: warm ivory, sage green, charcoal ink, washi accents
@@ -960,8 +963,39 @@ private fun HomeScreen(
         pendingAndroidRecipient = null
     }
 
+    val isMacConnected = pairingState is PairingState.Connected && !isAndroidPeer
+    val connectedDeviceName = (pairingState as? PairingState.Connected)?.peerName ?: "Mac"
+
     val mediaManager = (context.applicationContext as SYNQApplication).mediaManager
     val mediaState by mediaManager.state.collectAsStateWithLifecycle()
+    val macMedia by pairing.quickActions.media.collectAsStateWithLifecycle()
+
+    val macArtworkBitmap = remember(macMedia.artwork) {
+        macMedia.artwork?.let { base64 ->
+            runCatching {
+                val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
+                if (bytes.size <= 32768) {
+                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                } else null
+            }.getOrNull()
+        }
+    }
+
+    var currentMacPosition by remember(macMedia.title, macMedia.position, macMedia.playing) {
+        mutableIntStateOf(macMedia.position)
+    }
+
+    LaunchedEffect(macMedia.title, macMedia.playing, macMedia.position) {
+        currentMacPosition = macMedia.position
+        if (macMedia.playing && macMedia.duration > 0) {
+            while (isActive) {
+                delay(1000)
+                if (currentMacPosition < macMedia.duration) {
+                    currentMacPosition += 1
+                }
+            }
+        }
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -1233,18 +1267,86 @@ private fun HomeScreen(
             }
         }
 
-        if (mediaState.hasActiveSession && mediaState.title.isNotEmpty()) {
-            item { SectionTitle("Now playing") }
-            item {
-                AndroidMusicCard(
-                    media = mediaState,
-                    onToggle = mediaManager::togglePlayPause,
-                    onNext = mediaManager::skipNext,
-                    onPrev = mediaManager::skipPrevious,
-                    onSeek = mediaManager::seekTo,
-                    onVolume = mediaManager::setVolume
-                )
+        val nowPlaying = resolveNowPlayingDisplay(
+            isMacConnected = isMacConnected,
+            macMedia = macMedia,
+            phoneMedia = mediaState,
+            macName = connectedDeviceName
+        )
+
+        when (nowPlaying) {
+            is NowPlayingDisplay.Active -> {
+                item { SectionTitle("Now playing") }
+                item {
+                    NowPlayingCard(
+                        title = nowPlaying.title,
+                        subtitle = nowPlaying.subtitle,
+                        artwork = if (nowPlaying.isMacSource) macArtworkBitmap else mediaState.artwork,
+                        playing = nowPlaying.playing,
+                        positionSeconds = if (nowPlaying.isMacSource) currentMacPosition.toLong() else nowPlaying.positionSeconds,
+                        durationSeconds = nowPlaying.durationSeconds,
+                        volume = nowPlaying.volume,
+                        maxVolume = if (nowPlaying.isMacSource) 100 else mediaState.maxVolume,
+                        volumeSupported = if (nowPlaying.isMacSource) true else mediaState.volumeSupported,
+                        canPlayPause = if (nowPlaying.isMacSource) true else mediaState.canPlayPause,
+                        canSkipNext = if (nowPlaying.isMacSource) true else mediaState.canSkipNext,
+                        canSkipPrevious = if (nowPlaying.isMacSource) true else mediaState.canSkipPrevious,
+                        canSeek = if (nowPlaying.isMacSource) nowPlaying.durationSeconds > 0 else mediaState.canSeek,
+                        sources = if (nowPlaying.isMacSource) nowPlaying.sources else emptyList(),
+                        selectedSourceId = if (nowPlaying.isMacSource) nowPlaying.selectedSourceId else "",
+                        onSelectSource = { sourceId -> pairing.quickActions.selectSource(sourceId) },
+                        onToggle = if (nowPlaying.isMacSource) { { pairing.quickActions.request(SYNQFeature.MEDIA, "toggle") } } else mediaManager::togglePlayPause,
+                        onNext = if (nowPlaying.isMacSource) { { pairing.quickActions.request(SYNQFeature.MEDIA, "next") } } else mediaManager::skipNext,
+                        onPrev = if (nowPlaying.isMacSource) { { pairing.quickActions.request(SYNQFeature.MEDIA, "previous") } } else mediaManager::skipPrevious,
+                        onSeek = if (nowPlaying.isMacSource) { { pos -> pairing.quickActions.request(SYNQFeature.MEDIA, "seek", pos.toString()) } } else mediaManager::seekTo,
+                        onVolume = if (nowPlaying.isMacSource) { { vol -> pairing.quickActions.request(SYNQFeature.MEDIA, "volume", vol.toString()) } } else mediaManager::setVolume,
+                    )
+                }
             }
+            is NowPlayingDisplay.Empty -> {
+                item { SectionTitle("Now playing") }
+                item {
+                    Card(
+                        shape = RoundedCornerShape(22.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(18.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier.size(54.dp).background(
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                                    RoundedCornerShape(12.dp)
+                                ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MusicNote,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    nowPlaying.title,
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                Text(
+                                    nowPlaying.detail,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            is NowPlayingDisplay.Hidden -> {}
         }
 
         // SYNQ Link Nearby Sharing
@@ -2409,7 +2511,7 @@ private fun SettingsScreen(
                             color = MaterialTheme.colorScheme.primaryContainer
                         ) {
                             Text(
-                                "v3.5.4",
+                                "v${updateManager.currentVersionName}",
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -2441,7 +2543,7 @@ private fun SettingsScreen(
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Text(
-                                        "SYNQ 3.5.4 is installed",
+                                        "SYNQ ${updateManager.currentVersionName} is installed",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -2988,8 +3090,23 @@ private fun AndroidTransferCard(
 }
 
 @Composable
-private fun AndroidMusicCard(
-    media: AndroidMediaState,
+private fun NowPlayingCard(
+    title: String,
+    subtitle: String,
+    artwork: Bitmap?,
+    playing: Boolean,
+    positionSeconds: Long,
+    durationSeconds: Long,
+    volume: Int,
+    maxVolume: Int,
+    volumeSupported: Boolean,
+    canPlayPause: Boolean,
+    canSkipNext: Boolean,
+    canSkipPrevious: Boolean,
+    canSeek: Boolean,
+    sources: List<MediaSourceItem> = emptyList(),
+    selectedSourceId: String = "",
+    onSelectSource: (String) -> Unit = {},
     onToggle: () -> Unit,
     onNext: () -> Unit,
     onPrev: () -> Unit,
@@ -3002,13 +3119,124 @@ private fun AndroidMusicCard(
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (sources.isNotEmpty()) {
+                var expanded by remember { mutableStateOf(false) }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        "Audio source",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Box {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.clickable { expanded = true }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier.size(6.dp).background(
+                                        if (playing) Color(0xFF2EAD69) else MaterialTheme.colorScheme.outline,
+                                        CircleShape
+                                    )
+                                )
+                                Text(
+                                    sources.firstOrNull { it.id == selectedSourceId }?.name
+                                        ?: if (selectedSourceId.isEmpty() || selectedSourceId == "auto") "Auto" else selectedSourceId,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Icon(
+                                    Icons.Default.ArrowDropDown,
+                                    contentDescription = "Select Source",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+
+                        DropdownMenu(
+                            expanded = expanded,
+                            onDismissRequest = { expanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Text("Auto", fontWeight = FontWeight.SemiBold)
+                                        Text("(Active playback)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                },
+                                onClick = {
+                                    expanded = false
+                                    onSelectSource("auto")
+                                },
+                                leadingIcon = {
+                                    if (selectedSourceId.isEmpty() || selectedSourceId == "auto") {
+                                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                            )
+                            HorizontalDivider()
+                            sources.forEach { src ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                Text(src.name, fontWeight = FontWeight.SemiBold)
+                                                if (src.playing) {
+                                                    Surface(
+                                                        shape = CircleShape,
+                                                        color = Color(0xFF2EAD69).copy(alpha = 0.15f)
+                                                    ) {
+                                                        Text(
+                                                            "Playing",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = Color(0xFF2EAD69),
+                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            if (src.title.isNotEmpty()) {
+                                                Text(
+                                                    src.title,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+                                    },
+                                    onClick = {
+                                        expanded = false
+                                        onSelectSource(src.id)
+                                    },
+                                    leadingIcon = {
+                                        if (src.id == selectedSourceId) {
+                                            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                if (media.artwork != null) {
+                if (artwork != null) {
                     Image(
-                        bitmap = media.artwork.asImageBitmap(),
+                        bitmap = artwork.asImageBitmap(),
                         contentDescription = "Artwork",
                         modifier = Modifier.size(54.dp).clip(RoundedCornerShape(12.dp))
                     )
@@ -3030,14 +3258,14 @@ private fun AndroidMusicCard(
                 }
                 Column(Modifier.weight(1f)) {
                     Text(
-                        media.title.ifEmpty { "Playing" },
+                        title.ifEmpty { "Playing" },
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.titleMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        "${media.artist.ifEmpty { "Unknown artist" }} · ${media.playerName}",
+                        subtitle,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -3046,8 +3274,8 @@ private fun AndroidMusicCard(
                 }
             }
 
-            if (media.durationSeconds > 0) {
-                var seekPos by remember(media.positionSeconds) { mutableFloatStateOf(media.positionSeconds.toFloat()) }
+            if (durationSeconds > 0) {
+                var seekPos by remember(positionSeconds) { mutableFloatStateOf(positionSeconds.toFloat()) }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -3058,15 +3286,16 @@ private fun AndroidMusicCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        "${media.durationSeconds / 60}:${(media.durationSeconds % 60).toString().padStart(2, '0')}",
+                        "${durationSeconds / 60}:${(durationSeconds % 60).toString().padStart(2, '0')}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 Slider(
-                    value = seekPos.coerceIn(0f, media.durationSeconds.toFloat()),
+                    value = seekPos.coerceIn(0f, durationSeconds.toFloat()),
+                    enabled = canSeek,
                     onValueChange = { seekPos = it },
-                    valueRange = 0f..media.durationSeconds.toFloat(),
+                    valueRange = 0f..durationSeconds.toFloat(),
                     onValueChangeFinished = { onSeek(seekPos.toLong()) },
                     modifier = Modifier.fillMaxWidth().height(20.dp)
                 )
@@ -3079,33 +3308,33 @@ private fun AndroidMusicCard(
             ) {
                 IconButton(
                     onClick = onPrev,
-                    enabled = media.canSkipPrevious
+                    enabled = canSkipPrevious
                 ) {
                     Icon(Icons.Default.SkipPrevious, contentDescription = "Previous")
                 }
                 Spacer(Modifier.width(16.dp))
                 FilledIconButton(
                     onClick = onToggle,
-                    enabled = media.canPlayPause,
+                    enabled = canPlayPause,
                     modifier = Modifier.size(48.dp)
                 ) {
                     Icon(
-                        if (media.playing) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        contentDescription = if (media.playing) "Pause" else "Play",
+                        if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (playing) "Pause" else "Play",
                         modifier = Modifier.size(28.dp)
                     )
                 }
                 Spacer(Modifier.width(16.dp))
                 IconButton(
                     onClick = onNext,
-                    enabled = media.canSkipNext
+                    enabled = canSkipNext
                 ) {
                     Icon(Icons.Default.SkipNext, contentDescription = "Next")
                 }
             }
 
-            if (media.volumeSupported && media.maxVolume > 0) {
-                var vol by remember(media.volume) { mutableFloatStateOf(media.volume.toFloat()) }
+            if (volumeSupported && maxVolume > 0) {
+                var vol by remember(volume) { mutableFloatStateOf(volume.toFloat()) }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -3118,9 +3347,9 @@ private fun AndroidMusicCard(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Slider(
-                        value = vol.coerceIn(0f, media.maxVolume.toFloat()),
+                        value = vol.coerceIn(0f, maxVolume.toFloat()),
                         onValueChange = { vol = it },
-                        valueRange = 0f..media.maxVolume.toFloat(),
+                        valueRange = 0f..maxVolume.toFloat(),
                         onValueChangeFinished = { onVolume(vol.toInt()) },
                         modifier = Modifier.weight(1f).height(16.dp)
                     )
@@ -3134,6 +3363,37 @@ private fun AndroidMusicCard(
             }
         }
     }
+}
+
+@Composable
+private fun AndroidMusicCard(
+    media: AndroidMediaState,
+    onToggle: () -> Unit,
+    onNext: () -> Unit,
+    onPrev: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onVolume: (Int) -> Unit,
+) {
+    NowPlayingCard(
+        title = media.title.ifEmpty { "Playing" },
+        subtitle = "${media.artist.ifEmpty { "Unknown artist" }} · ${media.playerName}",
+        artwork = media.artwork,
+        playing = media.playing,
+        positionSeconds = media.positionSeconds,
+        durationSeconds = media.durationSeconds,
+        volume = media.volume,
+        maxVolume = media.maxVolume,
+        volumeSupported = media.volumeSupported,
+        canPlayPause = media.canPlayPause,
+        canSkipNext = media.canSkipNext,
+        canSkipPrevious = media.canSkipPrevious,
+        canSeek = media.canSeek,
+        onToggle = onToggle,
+        onNext = onNext,
+        onPrev = onPrev,
+        onSeek = onSeek,
+        onVolume = onVolume
+    )
 }
 
 @Composable

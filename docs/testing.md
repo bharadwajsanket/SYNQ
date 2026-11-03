@@ -15,7 +15,7 @@ The macOS test suite is built on XCTest and Swift Testing, covering protocol ser
   ```bash
   swift test
   ```
-- **Verified Coverage (92 unit tests):**
+- **Verified Coverage (130 unit tests):**
   - `DiscoveryTXTRecordTests`: DNS-SD record parsing and safety checks.
   - `ProtocolCryptoIntegrationTests`: Cross-platform crypto test vectors against `crypto-v1.properties`.
   - `ClipboardPayloadTests` & `ClipboardAutoSyncTests`: Bounded payload decoding and automatic synchronization.
@@ -27,23 +27,27 @@ The macOS test suite is built on XCTest and Swift Testing, covering protocol ser
   - `ReliabilityTests`: Reconnect exponential backoff, malformed frame rejection, and partial file cleanup.
   - `SYNQSettingsTests` & `SYNQDiagnosticsTests`: Feature flags, overrides, and privacy-preserving diagnostics.
   - `MenuBarPanelLayoutTests`: Window positioning, sizing bounds, and top-pinning geometry.
+  - `OnboardingWindowTests`: Welcome screen, initial state transitions, and single-confirmation synchronization.
+  - `SmsAndFileBrowsingTests`: SMS payload serialization, remote filesystem payload verification, and smart link extraction.
 
 ### Android Unit & Integration Tests
 
-The Android test suite runs on the JVM via Gradle and Robolectric/JUnit, exercising background services, discovery parsing, permissions, and cryptographic parity.
+The Android test suite runs on the JVM via Gradle and JUnit, exercising background services, discovery parsing, permissions, media routing, and cryptographic parity.
 
 - **Working Directory:** `android/`
 - **Execution Command:**
   ```bash
   ./gradlew testDebugUnitTest
   ```
-- **Verified Coverage (57 unit tests):**
+- **Verified Coverage (97 unit tests):**
   - `ProtocolCryptoIntegrationTest`: Cross-platform verification of P-256 ECDH, HKDF session keys, and AES-GCM-256.
   - `NearbyDeviceDeduplicationTest`: Multi-interface discovery deduplication.
   - `ClipboardPayloadTest`: Payload size bounds, text formatting, and HTML stripping.
   - `ForwardedNotificationRegistryTest`: Deduplication and expiration of forwarded notification tokens.
   - `NotificationSyncFilterTest`: Application blacklist filtering, self-notification filtering, and category checks.
   - `QuickActionsTest`: Inbound action dispatching and sequence checking.
+  - `NowPlayingSourceTest`: Dual-source metadata arbitration, playback command routing, and seek/volume validation.
+  - `SYNQUpdateManagerTest`: Cryptographic OTA manifest parsing, SHA-256 checks, and certificate fingerprint validation.
   - `ReliabilityTest`: Stream interruption handling and temporary file cleanup.
   - `RemoteCallRequestTest`: Intent dispatch safety and confirmation boundaries.
   - `SYNQSettingsTest` & `SYNQDiagnosticsTest`: Device-specific feature policies and sanitized diagnostic exports.

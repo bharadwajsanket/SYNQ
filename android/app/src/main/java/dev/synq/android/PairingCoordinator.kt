@@ -1618,6 +1618,13 @@ class PairingCoordinator(
             diagnostics.record("notification", "action_failed")
             return
         }
+        current.send(
+            Message(
+                kind = "notifications.action_performed",
+                sessionId = current.id,
+                messageId = messageId,
+            ),
+        )
         diagnostics.record("notification", if (replyText == null) "action_requested" else "reply_requested")
     }
 

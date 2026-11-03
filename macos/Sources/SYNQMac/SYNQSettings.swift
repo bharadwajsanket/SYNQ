@@ -81,7 +81,7 @@ final class SYNQSettings: ObservableObject {
         quietModeEnabled = storedDefaults.bool(forKey: "settings.quietMode.enabled")
         quietModeUpdatedAt = Int64(storedDefaults.object(forKey: "settings.quietMode.updatedAt") as? NSNumber ?? 0)
         globalFeatures = Dictionary(uniqueKeysWithValues: SYNQFeature.allCases.map {
-            ($0, storedDefaults.object(forKey: "settings.global.\($0.rawValue)") as? Bool ?? ($0 != .media))
+            ($0, storedDefaults.object(forKey: "settings.global.\($0.rawValue)") as? Bool ?? true)
         })
         var perDevice: [String: [SYNQFeature: Bool]] = [:]
         for (key, value) in storedDefaults.dictionaryRepresentation() where key.hasPrefix("settings.device.") {

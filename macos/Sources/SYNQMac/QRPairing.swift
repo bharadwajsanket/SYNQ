@@ -257,6 +257,7 @@ public final class QRPairingManager: ObservableObject {
     @Published public private(set) var qrCodeImage: NSImage?
     @Published public private(set) var payloadURI: String = ""
     @Published public private(set) var timeRemaining: TimeInterval = 120
+    @Published public private(set) var isConfirmed = false
 
     public private(set) var currentPayload: QRPairingPayload?
     public private(set) var isTokenConsumed = false
@@ -333,7 +334,12 @@ public final class QRPairingManager: ObservableObject {
     }
 
     public func setVerifying(code: String, peer: String) {
+        isConfirmed = false
         uiState = .verifying(code: code, peerName: peer)
+    }
+
+    public func setConfirmed() {
+        isConfirmed = true
     }
 
     public func setPaired(peer: String) {
@@ -355,6 +361,7 @@ public final class QRPairingManager: ObservableObject {
         timer = nil
         currentPayload = nil
         isTokenConsumed = false
+        isConfirmed = false
         qrCodeImage = nil
         payloadURI = ""
         uiState = .idle
@@ -493,11 +500,23 @@ public struct QRPairingPopoverView: View {
                             .padding(.vertical, 8)
                             .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                         
-                        Button("Codes match") {
-                            onConfirm?()
+                        if manager.isConfirmed {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Confirmed. Waiting for \(peer)…")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.top, 4)
+                        } else {
+                            Button("Codes match") {
+                                manager.setConfirmed()
+                                onConfirm?()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.regular)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.regular)
                     }
                     Spacer()
 

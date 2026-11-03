@@ -34,15 +34,94 @@ internal fun formatQuickActionStatus(feature: String, accepted: Boolean): String
     else "Link declined — check settings or dismiss the previous link"
 }
 
+data class MediaSourceItem(
+    val id: String = "",
+    val name: String = "",
+    val title: String = "",
+    val artist: String = "",
+    val playing: Boolean = false,
+    val position: Int = 0,
+    val duration: Int = 0,
+    val volume: Int = 0,
+)
+
 data class MacMediaState(
     val player: String = "", val title: String = "", val artist: String = "",
     val playing: Boolean = false, val position: Int = 0, val duration: Int = 0, val volume: Int = 0,
     val detail: String = "Enable a player in Mac Settings → Media",
     val artwork: String? = null,
+    val selectedSourceId: String = "",
+    val sources: List<MediaSourceItem> = emptyList(),
 )
 
+sealed interface NowPlayingDisplay {
+    object Hidden : NowPlayingDisplay
+    data class Empty(val title: String, val detail: String) : NowPlayingDisplay
+    data class Active(
+        val title: String,
+        val subtitle: String,
+        val artwork: String?,
+        val playing: Boolean,
+        val positionSeconds: Long,
+        val durationSeconds: Long,
+        val volume: Int,
+        val isMacSource: Boolean,
+        val selectedSourceId: String = "",
+        val sources: List<MediaSourceItem> = emptyList(),
+    ) : NowPlayingDisplay
+}
+
+fun resolveNowPlayingDisplay(
+    isMacConnected: Boolean,
+    macMedia: MacMediaState,
+    phoneMedia: AndroidMediaState,
+    macName: String = "Mac",
+): NowPlayingDisplay {
+    if (isMacConnected) {
+        if (macMedia.title.isNotEmpty()) {
+            val playerLabel = macMedia.player.ifEmpty { "Media" }
+            val artistLabel = macMedia.artist.ifEmpty { "Unknown artist" }
+            return NowPlayingDisplay.Active(
+                title = macMedia.title,
+                subtitle = "$artistLabel · $playerLabel ($macName)",
+                artwork = macMedia.artwork,
+                playing = macMedia.playing,
+                positionSeconds = macMedia.position.toLong(),
+                durationSeconds = macMedia.duration.toLong(),
+                volume = macMedia.volume,
+                isMacSource = true,
+                selectedSourceId = macMedia.selectedSourceId,
+                sources = macMedia.sources,
+            )
+        }
+        if ((macMedia.player.isNotEmpty() && macMedia.player != "Off") || macMedia.detail.isNotEmpty()) {
+            return NowPlayingDisplay.Empty(
+                title = "No media playing",
+                detail = macMedia.detail.ifEmpty { "Play audio in Music or Spotify on $macName" },
+            )
+        }
+        return NowPlayingDisplay.Hidden
+    }
+
+    if (phoneMedia.hasActiveSession && phoneMedia.title.isNotEmpty()) {
+        val artistLabel = phoneMedia.artist.ifEmpty { "Unknown artist" }
+        return NowPlayingDisplay.Active(
+            title = phoneMedia.title,
+            subtitle = "$artistLabel · ${phoneMedia.playerName} (This phone)",
+            artwork = null,
+            playing = phoneMedia.playing,
+            positionSeconds = phoneMedia.positionSeconds,
+            durationSeconds = phoneMedia.durationSeconds,
+            volume = phoneMedia.volume,
+            isMacSource = false,
+        )
+    }
+
+    return NowPlayingDisplay.Hidden
+}
+
 class QuickActions(
-    private val context: Context,
+    private val context: Context? = null,
     private val scope: CoroutineScope,
     private val available: (SYNQFeature) -> Boolean,
     private val send: (String, JSONObject) -> Boolean,
@@ -99,6 +178,10 @@ class QuickActions(
         request(SYNQFeature.LINKS, "offer", url)
     }
 
+    fun selectSource(sourceId: String) {
+        request(SYNQFeature.MEDIA, "selectSource", sourceId)
+    }
+
     @Synchronized fun receive(kind: String, payload: JSONObject) {
         if (payload.opt("version") != 1) return
         when (kind) {
@@ -133,11 +216,37 @@ class QuickActions(
                 val volume = payload.opt("volume") as? Int ?: return
                 if (position !in 0..604800 || duration !in 0..604800 || volume !in 0..100 ||
                     payload.opt("playing") !is Boolean) return
+                val sourcesList = mutableListOf<MediaSourceItem>()
+                val jsonSources = payload.optJSONArray("sources")
+                if (jsonSources != null) {
+                    for (i in 0 until jsonSources.length()) {
+                        val item = jsonSources.optJSONObject(i) ?: continue
+                        sourcesList.add(
+                            MediaSourceItem(
+                                id = item.optString("id"),
+                                name = item.optString("name"),
+                                title = item.optString("title"),
+                                artist = item.optString("artist"),
+                                playing = item.optBoolean("playing"),
+                                position = item.optInt("position"),
+                                duration = item.optInt("duration"),
+                                volume = item.optInt("volume", 100),
+                            )
+                        )
+                    }
+                }
                 mutableMedia.value = MacMediaState(
-                    payload.optString("player").take(64), payload.optString("title").take(256),
-                    payload.optString("artist").take(256), payload.getBoolean("playing"),
-                    position, duration, volume, payload.optString("detail").take(256),
-                    (payload.opt("artwork") as? String)?.takeIf { it.length <= 21848 },
+                    player = payload.optString("player").take(64),
+                    title = payload.optString("title").take(256),
+                    artist = payload.optString("artist").take(256),
+                    playing = payload.getBoolean("playing"),
+                    position = position,
+                    duration = duration,
+                    volume = volume,
+                    detail = payload.optString("detail").take(256),
+                    artwork = (payload.opt("artwork") as? String)?.takeIf { it.length <= 21848 },
+                    selectedSourceId = payload.optString("selectedSourceId"),
+                    sources = sourcesList,
                 )
             }
         }
@@ -147,7 +256,7 @@ class QuickActions(
         val link = mutableLink.value?.let(::validatedWebLink) ?: return
         if (!available(SYNQFeature.LINKS)) { dismissLink(); return }
         clearLinkNotification()
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        runCatching { context?.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
             .onSuccess {
                 mutableLink.value = null
                 send(
@@ -167,20 +276,21 @@ class QuickActions(
     }
 
     private fun postLinkNotification(link: String, title: String = "Webpage from Mac") {
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        val ctx = context ?: return
+        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
         val openPendingIntent = PendingIntent.getService(
-            context,
+            ctx,
             link.hashCode(),
-            Intent(context, SYNQConnectionService::class.java).setAction(SYNQConnectionService.ACTION_OPEN_LINK),
+            Intent(ctx, SYNQConnectionService::class.java).setAction(SYNQConnectionService.ACTION_OPEN_LINK),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val dismissPendingIntent = PendingIntent.getService(
-            context,
+            ctx,
             link.hashCode() + 1,
-            Intent(context, SYNQConnectionService::class.java).setAction(SYNQConnectionService.ACTION_DISMISS_LINK),
+            Intent(ctx, SYNQConnectionService::class.java).setAction(SYNQConnectionService.ACTION_DISMISS_LINK),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val notification = Notification.Builder(context, "bridgey_clipboard_v2")
+        val notification = Notification.Builder(ctx, "bridgey_clipboard_v2")
             .setSmallIcon(R.drawable.ic_synq_notification)
             .setContentTitle(title)
             .setContentText(link)
@@ -206,7 +316,7 @@ class QuickActions(
     }
 
     private fun clearLinkNotification() {
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        val nm = context?.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
         nm?.cancel(LINK_NOTIFICATION_ID)
     }
 

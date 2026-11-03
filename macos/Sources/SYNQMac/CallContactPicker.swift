@@ -30,7 +30,7 @@ struct CallContactPickerView: View {
     }
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .topLeading) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     Button(action: onClose) {
@@ -85,102 +85,117 @@ struct CallContactPickerView: View {
 
                 manualDialBar
             }
-            .padding(16)
+            .padding(.horizontal, 16)
+            .padding(.top, 18)
+            .padding(.bottom, 16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-            // In-panel call confirmation overlay: dismissing only cancels the dialog and keeps the SYNQ popover open.
+            // In-panel call confirmation overlay: centered modal pop-up style.
             if let target = pendingCall {
-                Color.black.opacity(0.4)
-                    .ignoresSafeArea()
-                    .onTapGesture {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            pendingCall = nil
-                        }
-                    }
-
-                VStack(spacing: 12) {
-                    Image(systemName: "phone.arrow.up.right")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(Color.accentColor)
-                        .frame(width: 40, height: 40)
-                        .background(Color.accentColor.opacity(0.12), in: Circle())
-
-                    Text("Call \(target.name)?")
-                        .font(.headline)
-                        .multilineTextAlignment(.center)
-
-                    Text("Place a call to \(target.number) using your phone?")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 8)
-
-                    HStack(spacing: 10) {
-                        Button("Cancel") {
+                ZStack(alignment: .center) {
+                    Color.black.opacity(0.45)
+                        .ignoresSafeArea()
+                        .onTapGesture {
                             withAnimation(.easeInOut(duration: 0.15)) {
                                 pendingCall = nil
                             }
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.regular)
-                        .keyboardShortcut(.cancelAction)
 
-                        Button {
-                            let num = target.number
-                            withAnimation(.easeInOut(duration: 0.15)) {
-                                pendingCall = nil
+                    VStack(spacing: 12) {
+                        Image(systemName: "phone.arrow.up.right")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 44, height: 44)
+                            .background(Color.accentColor.opacity(0.12), in: Circle())
+
+                        Text("Call \(target.name)?")
+                            .font(.headline)
+                            .multilineTextAlignment(.center)
+
+                        Text("Place a call to \(target.number) using your phone?")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 8)
+
+                        HStack(spacing: 12) {
+                            Button("Cancel") {
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    pendingCall = nil
+                                }
                             }
-                            onDial(num)
-                        } label: {
-                            Label("Call", systemImage: "phone.fill")
+                            .buttonStyle(.bordered)
+                            .controlSize(.regular)
+                            .keyboardShortcut(.cancelAction)
+
+                            Button {
+                                let num = target.number
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    pendingCall = nil
+                                }
+                                onDial(num)
+                            } label: {
+                                Label("Call", systemImage: "phone.fill")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.regular)
+                            .keyboardShortcut(.defaultAction)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.regular)
-                        .keyboardShortcut(.defaultAction)
+                        .padding(.top, 4)
                     }
-                    .padding(.top, 4)
+                    .padding(20)
+                    .frame(width: 270)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(.ultraThickMaterial)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .stroke(Color.primary.opacity(0.14), lineWidth: 1)
+                            )
+                            .shadow(color: Color.black.opacity(0.35), radius: 20, x: 0, y: 8)
+                    )
                 }
-                .padding(18)
-                .frame(maxWidth: 260)
-                .background(
-                    RoundedRectangle(cornerRadius: 14)
-                        .fill(.ultraThickMaterial)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 14)
-                                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
-                        )
-                        .shadow(color: Color.black.opacity(0.25), radius: 12, y: 5)
-                )
-                .transition(.scale(scale: 0.95).combined(with: .opacity))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                .transition(.opacity.combined(with: .scale(scale: 0.95)))
             }
 
-            // In-panel SMS composer overlay: keeps the popover open on Cancel, backdrop tap, or Send.
+            // In-panel SMS composer overlay: centered modal pop-up style.
             if let target = smsTarget, let onSendSMS = onSendSMS {
-                Color.black.opacity(0.4)
-                    .ignoresSafeArea()
-                    .onTapGesture {
+                ZStack(alignment: .center) {
+                    Color.black.opacity(0.45)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                smsTarget = nil
+                            }
+                        }
+
+                    SMSComposerSheet(target: target, onSend: onSendSMS, onDismiss: {
                         withAnimation(.easeInOut(duration: 0.15)) {
                             smsTarget = nil
                         }
-                    }
-
-                SMSComposerSheet(target: target, onSend: onSendSMS, onDismiss: {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        smsTarget = nil
-                    }
-                })
-                .frame(maxWidth: 308)
-                .background(
-                    RoundedRectangle(cornerRadius: 14)
-                        .fill(.ultraThickMaterial)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 14)
-                                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
-                        )
-                        .shadow(color: Color.black.opacity(0.25), radius: 12, y: 5)
-                )
-                .transition(.scale(scale: 0.95).combined(with: .opacity))
+                    })
+                    .padding(18)
+                    .frame(width: 300)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(.ultraThickMaterial)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .stroke(Color.primary.opacity(0.14), lineWidth: 1)
+                            )
+                            .shadow(color: Color.black.opacity(0.35), radius: 20, x: 0, y: 8)
+                    )
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                .transition(.opacity.combined(with: .scale(scale: 0.95)))
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .synqSwipeBack)) { _ in
+            handleSwipeBack()
+        }
+        .onSwipeBack {
+            handleSwipeBack()
         }
         .onAppear {
             if favourites.allFavourites.isEmpty && !favourites.syncedContacts.isEmpty {
@@ -192,6 +207,18 @@ struct CallContactPickerView: View {
                 selectedTab = .allContacts
             }
         }
+    }
+
+    private func handleSwipeBack() {
+        if pendingCall != nil {
+            withAnimation(.easeInOut(duration: 0.15)) { pendingCall = nil }
+            return
+        }
+        if smsTarget != nil {
+            withAnimation(.easeInOut(duration: 0.15)) { smsTarget = nil }
+            return
+        }
+        onClose()
     }
 
     private var manualDialBar: some View {
@@ -287,11 +314,18 @@ struct CallContactPickerView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("Tap to call")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                    Button {
+                        showAddSheet = true
+                    } label: {
+                        Label("Add", systemImage: "plus")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Add a contact to favourites")
                 }
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
                         ForEach(favourites.allFavourites) { contact in
                             FavouriteContactTile(contact: contact, onTap: {
                                 requestCall(name: contact.name, number: contact.number)
@@ -299,24 +333,18 @@ struct CallContactPickerView: View {
                                 smsTarget = SMSTarget(name: contact.name, number: contact.number)
                             })
                         }
+                        AddFavouriteTile {
+                            showAddSheet = true
+                        }
+                    }
+                    .padding(.vertical, 2)
                 }
-            }
-
-            Spacer(minLength: 0)
-
-            Button {
-                showAddSheet = true
-            } label: {
-                Label("Add favourite contact", systemImage: "star.badge.plus")
-                    .font(.caption)
-                    .foregroundStyle(Color.accentColor)
-            }
-            .buttonStyle(.plain)
-            .sheet(isPresented: $showAddSheet) {
-                AddFavouriteSheet(store: favourites)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .sheet(isPresented: $showAddSheet) {
+            AddFavouriteSheet(store: favourites)
+        }
     }
 
     // MARK: - All Contacts View
@@ -406,30 +434,32 @@ struct CallContactPickerView: View {
                 .frame(maxHeight: .infinity)
             }
 
-            // Sync from Phone action row
-            HStack {
-                if let status = favourites.syncStatus {
-                    Text(status)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer()
-                Button {
-                    favourites.startSync()
-                    onSyncContacts?()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: favourites.isSyncing ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
-                            .rotationEffect(.degrees(favourites.isSyncing ? 360 : 0))
-                            .animation(favourites.isSyncing ? Animation.linear(duration: 1).repeatForever(autoreverses: false) : .default, value: favourites.isSyncing)
-                        Text(favourites.isSyncing ? "Syncing…" : "Sync from Phone")
+            // Sync from Phone action row (only show below when contacts are present)
+            if !favourites.syncedContacts.isEmpty {
+                HStack {
+                    if let status = favourites.syncStatus {
+                        Text(status)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
-                    .font(.caption2)
-                    .foregroundStyle(Color.accentColor)
+                    Spacer()
+                    Button {
+                        favourites.startSync()
+                        onSyncContacts?()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: favourites.isSyncing ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
+                                .rotationEffect(.degrees(favourites.isSyncing ? 360 : 0))
+                                .animation(favourites.isSyncing ? Animation.linear(duration: 1).repeatForever(autoreverses: false) : .default, value: favourites.isSyncing)
+                            Text(favourites.isSyncing ? "Syncing…" : "Sync from Phone")
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(Color.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(favourites.isSyncing)
                 }
-                .buttonStyle(.plain)
-                .disabled(favourites.isSyncing)
             }
         }
     }
@@ -668,6 +698,45 @@ private struct FavouriteContactTile: View {
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
         .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct AddFavouriteTile: View {
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 8) {
+                ZStack {
+                    Circle()
+                        .strokeBorder(Color.accentColor.opacity(0.45), style: StrokeStyle(lineWidth: 1.5, dash: [3]))
+                        .frame(width: 36, height: 36)
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Add Contact")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                    Text("From contacts")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+            .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.accentColor.opacity(0.25), style: StrokeStyle(lineWidth: 1, dash: [4]))
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Add favourite contact")
+        .help("Add a contact to favourites")
     }
 }
 

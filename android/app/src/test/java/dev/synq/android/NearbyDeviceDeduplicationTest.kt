@@ -33,7 +33,7 @@ class NearbyDeviceDeduplicationTest {
     @Test
     fun filtersOutPeerWithMatchingDeviceId() {
         val pairedId = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-        val trusted = listOf(TrustedDevice(id = pairedId, name = "Sanket's MacBook Pro"))
+        val trusted = listOf(TrustedDevice(id = pairedId, name = "Paired MacBook Pro"))
         val peers = listOf(
             DiscoveredPeer(
                 serviceName = "SYNQ-a1b2c3d4",

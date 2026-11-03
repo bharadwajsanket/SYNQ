@@ -28,6 +28,8 @@ class SYNQApplication : Application() {
         private set
     lateinit var mediaManager: AndroidMediaManager
         private set
+    lateinit var remoteMedia: RemoteMediaSessionManager
+        private set
     lateinit var discovery: NsdDiscoveryService
         private set
     lateinit var settings: SYNQSettings
@@ -62,6 +64,9 @@ class SYNQApplication : Application() {
         pairing = PairingCoordinator(this, deviceId, deviceName, settings = settings)
         shareManager = AndroidShareManager(this, deviceId, deviceName)
         mediaManager = AndroidMediaManager(this)
+        remoteMedia = RemoteMediaSessionManager(this) { action, value ->
+            pairing.quickActions.request(SYNQFeature.MEDIA, action, value)
+        }
         updateManager = SYNQUpdateManager(this)
         pairing.androidShareManager = shareManager
         discovery = NsdDiscoveryService(this, LocalDiscoveryIdentity(deviceId, deviceName))
@@ -131,6 +136,19 @@ class SYNQApplication : Application() {
         applicationScope.launch {
             pairing.remoteFeatures.collect { features ->
                 if (features[SYNQFeature.BATTERY] != false) lastBatteryIntent?.let(::publishBattery)
+            }
+        }
+        // Mirror Mac media state to Android lock screen / notification shade
+        applicationScope.launch {
+            combine(pairing.state, pairing.quickActions.media) { pairingState, macMedia ->
+                Pair(pairingState, macMedia)
+            }.collect { (pairingState, macMedia) ->
+                val connectedPeerName = (pairingState as? PairingState.Connected)?.peerName ?: ""
+                if (pairingState is PairingState.Connected) {
+                    remoteMedia.updateFromMac(macMedia, connectedPeerName.ifEmpty { "Mac" })
+                } else {
+                    remoteMedia.clear()
+                }
             }
         }
         if (preferences.getBoolean(PREFERENCE_ENABLED, true)) enableSYNQ()

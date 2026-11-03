@@ -12,6 +12,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -259,37 +260,72 @@ class SYNQNotificationListenerService : NotificationListenerService() {
 
     @Synchronized
     private fun performAction(notificationId: String, actionToken: String, replyText: String?): Boolean {
-        val action = storedActions[actionToken]?.takeIf { it.notificationId == notificationId } ?: return false
-        if (replyText != null && action.remoteInputs.isEmpty()) return false
+        var action = storedActions[actionToken]?.takeIf { it.notificationId == notificationId }
+        if (action == null && canControlSystemCalls()) {
+            val muteToken = notificationToken("$notificationId\u0000mute")
+            val speakerToken = notificationToken("$notificationId\u0000speaker")
+            val hangupToken = notificationToken("$notificationId\u0000hangup")
+            val lowerToken = actionToken.lowercase()
+            if (actionToken == muteToken || lowerToken.contains("mute")) {
+                action = StoredNotificationAction(
+                    notificationId = notificationId,
+                    title = "Mute",
+                    pendingIntent = null,
+                    remoteInputs = emptyArray(),
+                    systemCallAction = SystemCallAction.MUTE,
+                )
+            } else if (actionToken == speakerToken || lowerToken.contains("speaker")) {
+                action = StoredNotificationAction(
+                    notificationId = notificationId,
+                    title = "Speaker",
+                    pendingIntent = null,
+                    remoteInputs = emptyArray(),
+                    systemCallAction = SystemCallAction.SPEAKER,
+                )
+            } else if (actionToken == hangupToken || lowerToken.contains("hang") || lowerToken.contains("end") || lowerToken.contains("decline")) {
+                action = StoredNotificationAction(
+                    notificationId = notificationId,
+                    title = "Hang Up",
+                    pendingIntent = null,
+                    remoteInputs = emptyArray(),
+                    systemCallAction = SystemCallAction.END,
+                )
+            }
+        }
+        val targetAction = action ?: return false
+        if (replyText != null && targetAction.remoteInputs.isEmpty()) return false
         return runCatching {
-            val succeeded = if (action.systemCallAction != null) {
-                if (performSystemCallAction(action.systemCallAction)) {
-                    true
-                } else if (action.pendingIntent != null) {
-                    runCatching { action.pendingIntent.send(); true }.getOrDefault(false)
-                } else {
-                    false
+            val succeeded = if (targetAction.systemCallAction != null) {
+                var handled = false
+                if (targetAction.pendingIntent != null) {
+                    handled = runCatching { targetAction.pendingIntent.send(); true }.getOrDefault(false)
                 }
-            } else if (replyText != null && action.remoteInputs.isNotEmpty()) {
+                val systemHandled = performSystemCallAction(targetAction.systemCallAction)
+                handled || systemHandled
+            } else if (replyText != null && targetAction.remoteInputs.isNotEmpty()) {
                 val results = Bundle().apply {
-                    action.remoteInputs.forEach { putCharSequence(it.resultKey, replyText.take(MAX_REPLY_LENGTH)) }
+                    targetAction.remoteInputs.forEach { putCharSequence(it.resultKey, replyText.take(MAX_REPLY_LENGTH)) }
                 }
                 val fillInIntent = Intent()
-                RemoteInput.addResultsToIntent(action.remoteInputs, fillInIntent, results)
-                action.pendingIntent?.send(this, 0, fillInIntent)
+                RemoteInput.addResultsToIntent(targetAction.remoteInputs, fillInIntent, results)
+                targetAction.pendingIntent?.send(this, 0, fillInIntent)
                 true
             } else {
-                if (action.pendingIntent != null) {
-                    runCatching { action.pendingIntent.send(); true }.getOrDefault(false)
+                if (targetAction.pendingIntent != null) {
+                    runCatching { targetAction.pendingIntent.send(); true }.getOrDefault(false)
                 } else {
                     false
                 }
             }
             if (succeeded) {
-                storedActions.remove(actionToken)
-                if (action.systemCallAction == SystemCallAction.END ||
-                    action.title.contains("hang", ignoreCase = true) ||
-                    action.title.contains("decline", ignoreCase = true)
+                val isToggleCallAction = targetAction.title.contains("speaker", ignoreCase = true) ||
+                        targetAction.title.contains("mute", ignoreCase = true)
+                if (!isToggleCallAction) {
+                    storedActions.remove(actionToken)
+                }
+                if (targetAction.systemCallAction == SystemCallAction.END ||
+                    targetAction.title.contains("hang", ignoreCase = true) ||
+                    targetAction.title.contains("decline", ignoreCase = true)
                 ) {
                     val systemKey = forwardedNotifications.systemKey(notificationId)
                     if (systemKey != null) {
@@ -306,7 +342,7 @@ class SYNQNotificationListenerService : NotificationListenerService() {
             }
             android.util.Log.i(
                 "SYNQ",
-                "PLUGIN notification action performed system=${action.systemCallAction != null} success=$succeeded",
+                "PLUGIN notification action performed system=${targetAction.systemCallAction != null} success=$succeeded",
             )
             succeeded
         }.getOrElse {
@@ -319,13 +355,59 @@ class SYNQNotificationListenerService : NotificationListenerService() {
     @Suppress("DEPRECATION")
     private fun performSystemCallAction(action: SystemCallAction): Boolean = runCatching {
         if (!canControlSystemCalls()) return false
-        val telecom = getSystemService(TelecomManager::class.java) ?: return false
+        val telecom = getSystemService(TelecomManager::class.java)
+        val audioManager = getSystemService(AudioManager::class.java)
         when (action) {
             SystemCallAction.ANSWER -> {
-                telecom.acceptRingingCall()
+                telecom?.acceptRingingCall()
                 true
             }
-            SystemCallAction.END -> Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && telecom.endCall()
+            SystemCallAction.END -> {
+                val inCallEnded = runCatching { SYNQInCallService.endCall() }.getOrDefault(false)
+                inCallEnded || (telecom != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && telecom.endCall())
+            }
+            SystemCallAction.MUTE -> {
+                val inCallMuted = runCatching { SYNQInCallService.toggleMute() }.getOrDefault(false)
+                if (audioManager != null) {
+                    audioManager.isMicrophoneMute = !audioManager.isMicrophoneMute
+                    true
+                } else inCallMuted
+            }
+            SystemCallAction.SPEAKER -> {
+                var handled = runCatching { SYNQInCallService.toggleSpeaker() }.getOrDefault(false)
+                if (!handled && audioManager != null) {
+                    handled = runCatching {
+                        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            val currentDevice = audioManager.communicationDevice
+                            val isSpeaker = currentDevice?.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER || audioManager.isSpeakerphoneOn
+                            if (isSpeaker) {
+                                val earpiece = audioManager.availableCommunicationDevices.firstOrNull {
+                                    it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                                }
+                                if (earpiece != null) {
+                                    audioManager.setCommunicationDevice(earpiece)
+                                } else {
+                                    audioManager.clearCommunicationDevice()
+                                }
+                                audioManager.isSpeakerphoneOn = false
+                            } else {
+                                val speaker = audioManager.availableCommunicationDevices.firstOrNull {
+                                    it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                                }
+                                if (speaker != null) {
+                                    audioManager.setCommunicationDevice(speaker)
+                                }
+                                audioManager.isSpeakerphoneOn = true
+                            }
+                        } else {
+                            audioManager.isSpeakerphoneOn = !audioManager.isSpeakerphoneOn
+                        }
+                        true
+                    }.getOrDefault(false)
+                }
+                handled
+            }
         }
     }.getOrDefault(false)
 
@@ -488,7 +570,7 @@ private data class NotificationActionCandidate(
     val systemCallAction: SystemCallAction? = null,
 )
 
-private enum class SystemCallAction { ANSWER, END }
+private enum class SystemCallAction { ANSWER, END, MUTE, SPEAKER }
 
 private fun notificationActionCandidates(
     notification: Notification,
@@ -565,7 +647,11 @@ internal fun systemCallActionTitles(callType: String, sdkInt: Int): List<String>
         if (sdkInt >= Build.VERSION_CODES.P) add("Decline")
         add("Answer")
     }
-    "ongoing" -> if (sdkInt >= Build.VERSION_CODES.P) listOf("Hang Up") else emptyList()
+    "ongoing" -> buildList {
+        add("Mute")
+        add("Speaker")
+        if (sdkInt >= Build.VERSION_CODES.P) add("Hang Up")
+    }
     "screening" -> buildList {
         if (sdkInt >= Build.VERSION_CODES.P) add("Hang Up")
         add("Answer")
@@ -594,9 +680,15 @@ private fun systemCallActionCandidates(
 
     return systemCallActionTitles(callType, sdkInt).map { title ->
         val isAnswer = title == "Answer"
+        val isMute = title == "Mute"
+        val isSpeaker = title == "Speaker"
         val matchedIntent = allActions.firstOrNull { (actionTitle, _) ->
             if (isAnswer) {
                 actionTitle.contains("Answer", ignoreCase = true) || actionTitle.contains("Accept", ignoreCase = true)
+            } else if (isMute) {
+                actionTitle.contains("Mute", ignoreCase = true)
+            } else if (isSpeaker) {
+                actionTitle.contains("Speaker", ignoreCase = true)
             } else {
                 actionTitle.contains("Decline", ignoreCase = true) ||
                 actionTitle.contains("Hang", ignoreCase = true) ||
@@ -606,15 +698,22 @@ private fun systemCallActionCandidates(
             }
         }?.second ?: if (isAnswer) {
             notification.extras.pendingIntent(Notification.EXTRA_ANSWER_INTENT)
-        } else {
+        } else if (!isMute && !isSpeaker) {
             notification.extras.pendingIntent(Notification.EXTRA_DECLINE_INTENT)
                 ?: notification.extras.pendingIntent(Notification.EXTRA_HANG_UP_INTENT)
+        } else {
+            null
         }
 
         NotificationActionCandidate(
             title = title,
             pendingIntent = matchedIntent,
-            systemCallAction = if (isAnswer) SystemCallAction.ANSWER else SystemCallAction.END,
+            systemCallAction = when {
+                isAnswer -> SystemCallAction.ANSWER
+                isMute -> SystemCallAction.MUTE
+                isSpeaker -> SystemCallAction.SPEAKER
+                else -> SystemCallAction.END
+            },
         )
     }
 }

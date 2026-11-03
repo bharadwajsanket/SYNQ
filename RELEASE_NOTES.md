@@ -1,3 +1,27 @@
+# SYNQ v4.5.4 — Release Notes
+
+Release v4.5.4 brings refined Apple Music and Spotify media control from Android, independent multi-source playback detection, interactive source switching on Android, lock-screen and notification shade `MediaSession` integration, dedicated macOS media access controls, and full ecosystem polish.
+
+---
+
+## What's New in v4.5.4
+
+### Apple Music & Spotify Remote Control
+- **Dedicated Player Integration:** Automatically discovers and controls media playback across Apple Music and Spotify on macOS with native AppleScript reliability.
+- **Intelligent Playback Identification:** Accurately detects active playback across both players independently and automatically prioritizes genuinely playing tracks over paused sessions.
+- **Rich Metadata & Artwork:** Extracts and forwards real-time track title, artist, album artwork thumbnails, duration, timeline position, and sound volume.
+
+### Android Media Source Selector & Native Lock Screen
+- **Now Playing Source Selector:** An interactive dropdown selector on the Android dashboard enables users to seamlessly switch between Apple Music and Spotify or select "Auto" to follow active playback.
+- **Native Android MediaSession:** Integrates a system `MediaSession` that displays full artwork and media controls on the Android lock screen and notification shade via `Notification.MediaStyle`.
+- **Full Transport Controls:** Play/Pause, Next, Previous, seeking, and volume changes issued from the lock screen, notification shade, or in-app card are piped directly to the selected Mac application over SYNQ's secure channel.
+
+### Server-Side Media Access Control
+- **Dedicated macOS Security Toggle:** Added a prominent setting in macOS Settings: *"Allow connected devices to control media — Let paired devices view and control media playing on this Mac"*.
+- **Enforced Security:** Enabled by default, this permission is strictly enforced server-side on macOS. Disabling it immediately terminates media broadcasts, clears the Android remote lock-screen session, and rejects all incoming media control requests.
+
+---
+
 # SYNQ v3.5.4 — Release Notes
 
 Release v3.5.4 introduces an Apple- and Material 3-inspired dark-first redesign, end-to-end cryptographic Over-The-Air (OTA) updates for Android and macOS, high-throughput pipelined sliding-window file streaming, instant QR-based pairing with anti-SSRF protections, direct Android-to-Android encrypted file transfers, sequential NSD resolve queues, and a dynamic menu-bar connection indicator.

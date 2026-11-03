@@ -431,8 +431,8 @@ struct GuestTransferPopoverView: View {
             .padding(.top, 10)
         }
         .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 12)
+        .padding(.top, 18)
+        .padding(.bottom, 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear {
             if !manager.isSessionActive { manager.startSession() }

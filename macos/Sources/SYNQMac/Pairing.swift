@@ -287,6 +287,11 @@ struct QueuedConnectionRequest {
 final class PairingCoordinator: ObservableObject {
     @Published private(set) var state: PairingState = .idle {
         didSet {
+            if case .verification = state {
+                // keep local confirmation status for the active session
+            } else {
+                isLocalConfirmed = false
+            }
             switch state {
             case .idle: qrPairingManager.setIdle()
             case let .connecting(peer): qrPairingManager.setConnecting(peer: peer)
@@ -300,6 +305,7 @@ final class PairingCoordinator: ObservableObject {
     public var localDeviceID: String { deviceID }
     public var localDeviceName: String { deviceName }
     public var listeningPort: Int { Int(listener?.port?.rawValue ?? 42_458) }
+    @Published private(set) var isLocalConfirmed: Bool = false
     @Published private(set) var trustedDeviceIDs: Set<String>
     @Published private(set) var clipboardStatus: String? = nil
     @Published private(set) var remoteBattery: RemoteBatteryStatus? = nil
@@ -315,6 +321,8 @@ final class PairingCoordinator: ObservableObject {
     @Published private(set) var remoteCall: RemoteCallStatus?
     @Published private(set) var callStatus: String?
     @Published private(set) var inFlightCallActionToken: String?
+    @Published private(set) var isSpeakerActive: Bool = false
+    @Published private(set) var isMuteActive: Bool = false
     @Published private(set) var pingStatus: String?
     @Published private(set) var findDeviceStatus: String?
     @Published private(set) var queuedConnection: QueuedConnectionRequest? = nil
@@ -404,7 +412,7 @@ final class PairingCoordinator: ObservableObject {
     private let diagnostics = SYNQDiagnostics()
     private let notificationHistoryStore: NotificationHistoryStore
 
-    init(deviceID: String, deviceName: String, settings: SYNQSettings) {
+    init(deviceID: String, deviceName: String, settings: SYNQSettings, startListenerOnLaunch: Bool = true) {
         self.deviceID = deviceID
         self.deviceName = deviceName
         self.settings = settings
@@ -448,10 +456,14 @@ final class PairingCoordinator: ObservableObject {
         )
         remoteNotificationCategories[remoteNotificationCategory.identifier] = remoteNotificationCategory
         remoteNotificationCategories[linkCategory.identifier] = linkCategory
-        UNUserNotificationCenter.current().setNotificationCategories(Set(remoteNotificationCategories.values))
-        UNUserNotificationCenter.current().delegate = notificationPresenter
-        refreshNotificationAuthorization()
-        startListener()
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            UNUserNotificationCenter.current().setNotificationCategories(Set(remoteNotificationCategories.values))
+            UNUserNotificationCenter.current().delegate = notificationPresenter
+            refreshNotificationAuthorization()
+        }
+        if startListenerOnLaunch {
+            startListener()
+        }
         quickActions.available = { [weak self] in self?.isFeatureAvailable($0) == true }
         quickActions.send = { [weak self] in self?.sendQuickPayload(kind: $0, payload: $1) == true }
         mediaController.allowed = { [weak self] in
@@ -483,7 +495,15 @@ final class PairingCoordinator: ObservableObject {
                     if !self.featureEnabled(.ping) { self.clearPingStatus() }
                     if !self.featureEnabled(.findDevice) { self.clearFindDeviceStatus() }
                     if !self.isFeatureAvailable(.links) { self.quickActions.reset() }
-                    self.mediaController.reset()
+                    if !self.isFeatureAvailable(.media) {
+                        self.mediaController.reset()
+                        _ = self.sendQuickPayload(kind: "media.state", payload: [
+                            "version": 1, "player": "Off", "title": "", "artist": "", "playing": false,
+                            "position": 0, "duration": 0, "volume": 0, "detail": "Media control disabled on Mac"
+                        ])
+                    } else {
+                        self.mediaController.refresh()
+                    }
                     if !self.featureEnabled(.clipboard) { self.clearClipboardSendStatus() }
                     if !self.featureEnabled(.notifications) { self.clearRemoteCall() }
                     if !self.featureEnabled(.calls) {
@@ -496,7 +516,6 @@ final class PairingCoordinator: ObservableObject {
                         self.clearNotificationHistory()
                     }
                     self.sendFeatureState()
-                    self.mediaController.refresh()
                     self.publishLocalBattery(force: true)
                     if self.settings.clipboardAutoSync && self.isFeatureAvailable(.clipboard) && self.isConnected {
                         self.startClipboardMonitorIfNeeded()
@@ -524,6 +543,11 @@ final class PairingCoordinator: ObservableObject {
                     self?.sendQuietModeState()
                 }
             }
+    }
+
+    deinit {
+        listener?.cancel()
+        listener = nil
     }
 
     func refreshNotificationAuthorization() {
@@ -632,6 +656,7 @@ final class PairingCoordinator: ObservableObject {
 
     private func confirm(_ current: Session) {
         current.localConfirmed = true
+        isLocalConfirmed = true
         let identityKey = identity.publicKey
         current.send(PairingMessage(
             kind: "pairing.confirm",
@@ -1918,7 +1943,15 @@ final class PairingCoordinator: ObservableObject {
                     self.session = nil
                     self.clearPingStatus()
                     self.quickActions.reset()
-                    self.mediaController.reset()
+                    if !self.isFeatureAvailable(.media) {
+                        self.mediaController.reset()
+                        _ = self.sendQuickPayload(kind: "media.state", payload: [
+                            "version": 1, "player": "Off", "title": "", "artist": "", "playing": false,
+                            "position": 0, "duration": 0, "volume": 0, "detail": "Media control disabled on Mac"
+                        ])
+                    } else {
+                        self.mediaController.refresh()
+                    }
                     self.lastSentBattery = nil
                     self.clearRemoteCall()
                     self.remoteFeatureStateReceived = false
@@ -2199,6 +2232,10 @@ final class PairingCoordinator: ObservableObject {
                 guard featureEnabled(.notifications, current: current),
                       let reference = try receiveNotificationReference(message, in: current) else { return }
                 removeRemoteNotification(reference.notificationId, deviceID: current.remoteDeviceID)
+            case "notifications.action_performed":
+                callActionTimeoutWorkItem?.cancel()
+                callActionTimeoutWorkItem = nil
+                inFlightCallActionToken = nil
             case "notifications.action_failed":
                 callActionTimeoutWorkItem?.cancel()
                 callActionTimeoutWorkItem = nil
@@ -2952,6 +2989,10 @@ final class PairingCoordinator: ObservableObject {
         if isHangUpOrDecline {
             recordEndedCallNotificationID(call.notificationID)
             setTransientCallStatus("Ending call…")
+        } else if action.title.localizedCaseInsensitiveContains("speaker") {
+            isSpeakerActive.toggle()
+        } else if action.title.localizedCaseInsensitiveContains("mute") {
+            isMuteActive.toggle()
         }
 
         performAndroidNotificationAction(
@@ -2973,7 +3014,8 @@ final class PairingCoordinator: ObservableObject {
             }
         }
         callActionTimeoutWorkItem = timeout
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0, execute: timeout)
+        let timeoutDelay = isHangUpOrDecline ? 4.0 : 0.4
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeoutDelay, execute: timeout)
     }
 
     func hideCallOverlay() {
@@ -3162,6 +3204,8 @@ final class PairingCoordinator: ObservableObject {
             callActionTimeoutWorkItem?.cancel()
             callActionTimeoutWorkItem = nil
             inFlightCallActionToken = nil
+            isSpeakerActive = false
+            isMuteActive = false
             clearCallStatus()
             mediaController.callChanged(active: false)
             remoteCall = nil
@@ -3181,6 +3225,8 @@ final class PairingCoordinator: ObservableObject {
         callActionTimeoutWorkItem?.cancel()
         callActionTimeoutWorkItem = nil
         inFlightCallActionToken = nil
+        isSpeakerActive = false
+        isMuteActive = false
         guard let call = remoteCall else { return }
         remoteCall = nil
         callOverlayWindow.hide()

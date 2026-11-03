@@ -75,24 +75,12 @@ private struct CallOverlayView: View {
                         .help("Hide call controls; they remain available in SYNQ")
                     }
 
-                    if call.actions.isEmpty {
+                    if resolvedAppleCallActions(for: call).isEmpty {
                         Text("Use the phone to control this call.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
-                        HStack(spacing: 10) {
-                            ForEach(orderedCallActions(call.actions).prefix(2)) { action in
-                                let isPending = (pairing.inFlightCallActionToken ?? inFlightActionToken) == action.id
-                                Button(isPending ? actionPendingTitle(action.title) : action.title) {
-                                    inFlightActionToken = action.id
-                                    pairing.performRemoteCallAction(action)
-                                }
-                                .buttonStyle(CallActionButtonStyle(color: callActionColor(action.title)))
-                                .disabled(pairing.inFlightCallActionToken != nil || inFlightActionToken != nil)
-                                .opacity((pairing.inFlightCallActionToken != nil || inFlightActionToken != nil) && !isPending ? 0.5 : 1.0)
-                                .frame(maxWidth: .infinity)
-                            }
-                        }
+                        AppleCallControlsView(call: call, pairing: pairing)
                     }
                 }
                 .padding(16)

@@ -100,7 +100,7 @@ final class BonjourDiscovery: NSObject, ObservableObject {
     private var restartWorkItem: DispatchWorkItem?
     private var wakeObserverToken: NSObjectProtocol?
 
-    init(deviceName preferredName: String? = nil) {
+    init(deviceName preferredName: String? = nil, autoStart: Bool = true) {
         let defaults = UserDefaults.standard
         if let stored = defaults.string(forKey: "deviceID"), UUID(uuidString: stored) != nil {
             deviceID = stored
@@ -113,7 +113,9 @@ final class BonjourDiscovery: NSObject, ObservableObject {
         browser.delegate = self
         setupPathMonitoring()
         setupSleepWakeMonitoring()
-        start()
+        if autoStart {
+            start()
+        }
     }
 
     deinit {

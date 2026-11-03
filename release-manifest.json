@@ -1,26 +1,26 @@
 {
-  "version": "3.5.4",
-  "versionCode": 35,
-  "releaseDate": "2026-11-01",
-  "releaseNotes": "SYNQ 3.5.4: Redesigned Apple-inspired dark-first aesthetic, in-app OTA update system for Android and macOS with certificate and cryptographic integrity verification, aspect-ratio corrected QR camera scanner, sequential NSD resolve queue, and streamlined local file sharing.",
+  "version": "4.5.4",
+  "versionCode": 45,
+  "releaseDate": "2026-11-02",
+  "releaseNotes": "SYNQ 4.5.4: Apple Music and Spotify remote media control, independent dual-source playback detection, Android lock-screen and notification shade MediaSession controls, multi-source selector, dedicated macOS media access control toggle, and complete ecosystem polish.",
   "platforms": {
     "android": {
-      "version": "3.5.4",
-      "versionCode": 35,
+      "version": "4.5.4",
+      "versionCode": 45,
       "packageName": "bharadwaj.synq.bridge",
       "minSdk": 26,
       "targetSdk": 36,
-      "downloadUrl": "https://github.com/bharadwajsanket/SYNQ/releases/download/v3.5.4/SYNQ-Android.apk",
-      "size": 1610556,
-      "sha256": "ad4f790929120004b52f1dbdb98c0510e387aedee4a42cc18893d09a74475b52",
+      "downloadUrl": "https://github.com/bharadwajsanket/SYNQ/releases/download/v4.5.4/SYNQ-Android.apk",
+      "size": 1626940,
+      "sha256": "d3df60e04625d850f7974beec267d5c41bceccd0ddc3b92627917888e19e4840",
       "certificateFingerprint": "ad2eeabb5612c89587df603ab55cc8d5870824adbb793602474913c2266a4484"
     },
     "macos": {
-      "version": "3.5.4",
-      "buildNumber": "35",
-      "downloadUrl": "https://github.com/bharadwajsanket/SYNQ/releases/download/v3.5.4/SYNQ-macOS.dmg",
-      "size": 2554320,
-      "sha256": "3b9fa62dcdc9922713a322c337be71c923b52d679e85cb356ff9d365273779a9"
+      "version": "4.5.4",
+      "buildNumber": "45",
+      "downloadUrl": "https://github.com/bharadwajsanket/SYNQ/releases/download/v4.5.4/SYNQ-macOS.dmg",
+      "size": 2648684,
+      "sha256": "523609c6286a6e4a2c2850c5b686d2612c00a3c1a5efce17f493e0b3242b0abd"
     }
   }
 }

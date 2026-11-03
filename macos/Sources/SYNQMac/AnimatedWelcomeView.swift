@@ -14,30 +14,30 @@ struct AnimatedWelcomeView: View {
     }
 
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 14) {
             // Header: App icon + title
             VStack(spacing: 6) {
-                Image(nsImage: makeSynqDeviceIcon(size: 44))
-                    .frame(width: 44, height: 44)
+                Image(nsImage: makeSynqDeviceIcon(size: 46))
+                    .frame(width: 46, height: 46)
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .shadow(color: Color.black.opacity(0.12), radius: 4, x: 0, y: 2)
+                    .shadow(color: Color.black.opacity(0.12), radius: 5, x: 0, y: 2)
                     .scaleEffect(hasAppeared || reduceMotion ? 1.0 : 0.9)
                     .opacity(hasAppeared || reduceMotion ? 1.0 : 0.0)
 
                 Text(L10n.text("welcome.title", fallback: "Welcome to SYNQ"))
-                    .font(.headline.weight(.semibold))
+                    .font(.title2.weight(.bold))
 
                 Text(L10n.text("welcome.subtitle", fallback: "Fast, private sharing across your Mac & Android."))
-                    .font(.caption)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
-            .padding(.top, 4)
 
             // Device Connection Animation
             deviceConnectionIllustration
-                .frame(height: 70)
-                .padding(.horizontal, 12)
+                .frame(height: 58)
+                .frame(maxWidth: 340)
+                .padding(.horizontal, 16)
 
             // Value pillars
             VStack(alignment: .leading, spacing: 8) {
@@ -52,22 +52,23 @@ struct AnimatedWelcomeView: View {
                     detail: "Stream large files, share clipboards, and sync notifications at local Wi-Fi speeds."
                 )
             }
-            .padding(.horizontal, 4)
+            .frame(maxWidth: 380)
 
             // Primary action
             VStack(spacing: 8) {
                 Button(action: onGetStarted) {
                     HStack {
                         Text(L10n.text("welcome.continue", fallback: "Get Started"))
-                            .fontWeight(.medium)
+                            .fontWeight(.semibold)
                         Image(systemName: "arrow.right")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.system(size: 12, weight: .semibold))
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 2)
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
+                .controlSize(.large)
+                .frame(maxWidth: 280)
                 .accessibilityLabel(L10n.text("welcome.continue", fallback: "Get Started"))
                 .accessibilityHint("Closes the welcome guide and starts device discovery")
 
@@ -75,9 +76,9 @@ struct AnimatedWelcomeView: View {
                     Button(action: onPairWithQR) {
                         HStack(spacing: 6) {
                             Image(systemName: "qrcode")
-                                .font(.system(size: 11, weight: .medium))
+                                .font(.system(size: 12, weight: .medium))
                             Text("Pair with QR Code")
-                                .font(.caption.weight(.medium))
+                                .font(.callout.weight(.medium))
                         }
                         .foregroundStyle(Color.accentColor)
                     }
@@ -85,9 +86,9 @@ struct AnimatedWelcomeView: View {
                     .accessibilityLabel("Pair with QR Code")
                 }
             }
-            .padding(.top, 2)
         }
-        .padding(16)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 18)
         .onAppear {
             if reduceMotion {
                 hasAppeared = true

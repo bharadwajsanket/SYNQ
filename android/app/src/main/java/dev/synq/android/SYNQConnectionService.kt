@@ -268,6 +268,17 @@ class SYNQConnectionService : Service() {
             (application as SYNQApplication).pairing.quickActions.dismissLink()
             return START_STICKY
         }
+        // Remote media controls from notification shade / lock screen
+        val mediaAction = intent?.action?.removePrefix("dev.synq.REMOTE_MEDIA_")
+        if (mediaAction != null && mediaAction != intent?.action) {
+            val qa = (application as SYNQApplication).pairing.quickActions
+            when (mediaAction) {
+                "play", "pause" -> qa.request(SYNQFeature.MEDIA, "toggle")
+                "next" -> qa.request(SYNQFeature.MEDIA, "next")
+                "previous" -> qa.request(SYNQFeature.MEDIA, "previous")
+            }
+            return START_STICKY
+        }
         // Re-post even when the service is already alive: Android 13+ and some
         // Samsung builds allow users to dismiss foreground-service cards.
         startForeground(NOTIFICATION_ID, buildNotification(lastStatus))

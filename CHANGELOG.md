@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [4.5.4] - 2026-11-02
+
+### Added
+- **Remote Media Control for Apple Music & Spotify:** Real-time playback control, track metadata, artist info, album artwork thumbnails, timeline progress, and volume control across Apple Music and Spotify on macOS.
+- **Independent Dual-Source Playback Detection:** Automatically queries Apple Music and Spotify states in parallel, intelligently preferring the actively playing source over paused sessions.
+- **Android Media Source Selector:** Added interactive source selector chip and dropdown menu directly on Android's `NowPlayingCard`, enabling manual source selection between Apple Music and Spotify or automatic playback-following.
+- **Android System MediaSession & Lock Screen:** Synchronized system `MediaSession` with `MediaStyle` notification shade controls and lock-screen playback controls (title, creator, artwork, play/pause, next, previous, seek) mirroring active Mac playback.
+- **Spotify CDN Album Artwork Pipeline:** Added automated HTTPS cover image retrieval for Spotify tracks, converting CDN images into optimized 128px JPEG thumbnails (<16 KB) for local transfer to Android.
+- **macOS Media Access Control Toggle:** Added dedicated security toggle in macOS Settings under General → Media (*"Allow connected devices to control media — Let paired devices view and control media playing on this Mac"*), enabled by default and enforced server-side.
+- **Synchronized Pairing Confirmation:** Added `isLocalConfirmed` in `PairingCoordinator` and `isConfirmed` in `QRPairingManager` to unify verification state across the onboarding window and menu bar popover.
+
+### Improved
+- **Clean Lock-Screen Notification Lifecycle:** `RemoteMediaSessionManager` ensures the system `MediaSession` is only active when an actual track is loaded or playing (`state.title.isNotBlank()`). Stopped or cleared states cleanly dismiss the notification.
+- **Scoped UI Copy:** Updated all empty-state labels on macOS and Android to explicitly reflect the supported media scope: `"Open Music or Spotify on your Mac"`.
+- **Menu Bar Extra Geometry:** Removed programmatic window frame mutations that caused the popover to creep over the macOS menu bar; clamped window top boundary strictly to `visibleFrame.maxY`.
+- **Menu Bar Popover Sizing:** Added adequate height (540pt for Call, 530pt for Guest Share) and top padding (18pt) to prevent truncation of titles, back buttons, and bottom action bars.
+
+### Fixed
+- **Fixed Phantom Lock-Screen Notifications:** Resolved an issue where Android displayed an empty media notification on the lock screen with `"No title"` and placeholder controls when no track was playing on Mac.
+- **Fixed Missing Spotify Thumbnails:** Resolved issue where Spotify tracks displayed without album artwork on Android by adding Spotify CDN image extraction and caching to `MediaController.swift`.
+- **Fixed Duplicate "Codes Match" Prompt:** Resolved issue where confirming the 6-digit verification code in the Welcome onboarding window caused the popover to ask for confirmation a second time.
+- **Fixed Concurrency Deadlock in Media Gathering:** Replaced blocking `group.wait()` calls on serial queues with non-blocking `DispatchQueue.global(qos: .userInitiated)` and `group.notify`.
+- **Fixed MainActor Concurrency Warnings in Media Controller:** Safely isolated artwork cache mutations to `@MainActor` without cross-actor reference warnings.
+
+### Performance
+- **Ephemeral Artwork Caching:** Media artwork is cached in-memory using compound keys (`id|title|artist`). Subsequent state updates for the same track bypass re-compression and network downloads.
+- **Bounded Artwork Payloads:** All album artwork is strictly downsampled to 128px JPEG thumbnails capped at 16 KB, preventing local socket congestion.
+
+### Security and Reliability
+- **Server-Side Media Gating:** Toggling off media control in macOS Settings immediately terminates outgoing `media.state` broadcasts, clears the Android remote lock-screen session, and rejects all incoming media control requests server-side.
+- **Single-Source Enforcement:** The selected media source is consistently maintained across Android Home, system `MediaSession`, lock screen, and notification shade.
+
+---
+
 ## [3.5.4] - 2026-11-01
 
 ### Added
@@ -61,4 +95,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - P-256 ECDH + AES-GCM local-network pairing.
 - Bidirectional clipboard sync, notification mirroring, contacts sync, and remote file browsing.
 - Guest file sharing via ephemeral QR code.
-

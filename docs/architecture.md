@@ -1,153 +1,221 @@
-# Architecture
+# Architecture & System Design — SYNQ 4.5.4
 
-## Core Architectural Design
-
-The project is structured as a monorepo containing native clients for macOS (Swift) and Android (Kotlin) communicating via a platform-neutral protocol over the local network (LAN).
-
-### Current Implemented Architecture (v0.5 / v0.6)
-
-Clients connect directly over local Wi-Fi / Ethernet without intermediate cloud servers, relays, or external accounts.
-
-```text
-Native macOS App / Android App
-          │
-  PairingCoordinator (Session Lifecycle & Feature Gating)
-          │
-  Raw TCP Socket Layer (Newline-delimited JSON Framing, 64 KiB max frame)
-          │
-  Application-Layer Cryptography
-   ├── Ephemeral P-256 ECDH + HKDF-SHA-256 key agreement
-   ├── 6-Digit SAS verification code
-   ├── Stored P-256 identity keys (Keychain / Android KeyStore)
-   └── AES-GCM encrypted payloads (with base64 nonce + ciphertext)
-          │
-  Feature Domains
-   ├── Clipboard (Rich HTML + plain-text fallback, 32 KiB cap)
-   ├── File Transfer (24 KiB chunks, 64-chunk sliding window, SHA-256)
-   ├── Notification Forwarding (App filtering, transient 64-char action tokens)
-   ├── Phone Calls (Validated tel: numbers, local dialer confirmation)
-   └── Quick Actions & Media (Media control, link handoff, ping, battery)
-```
-
-> **Note on Future Architectural Proposals:** Earlier drafts outlined a persistent WebSocket over TLS transport using a generic JSON envelope router (`core.hello`). That design has not been implemented. The production wire format is raw TCP sockets using newline-delimited `PairingMessage` JSON structures and application-layer AES-GCM encryption.
+SYNQ is a local-first, peer-to-peer companion application linking macOS and Android devices over the local network (LAN) without intermediate cloud servers, relays, or external accounts.
 
 ---
 
-## Core Boundaries
-
-### Discovery
-- **Mechanism**: Publishes and browses DNS-SD / mDNS service type `_synq._tcp.local.`.
-- **Advisory TXT Records**: Contain hint metadata only (`id`, `name`, `version`, `platform`). Port is determined by the SRV record.
-- **Trust Boundary**: Discovery records are completely untrusted. Discovery never automatically pairs or establishes trust. A peer is authenticated only after completing cryptographic proof of its stored long-term identity key.
-
-### Device Registry & Secure Storage
-- Stores the stable local device ID and paired peer records.
-- Peer records associate device ID with display name, long-term public identity key, and granted feature permissions.
-- **Key Storage**: Android stores private key material in Android KeyStore (`p256-signing-v1`); macOS stores private key material in macOS Keychain (`dev.synq.identity`).
-- Discovery caches remain ephemeral and separate from the trust store.
-
-### Transport
-- **Implementation**: Native TCP sockets (macOS `NWConnection` / `NWListener`, Android `Socket` / `ServerSocket`).
-- **Framing**: UTF-8 newline-delimited (`\n`) JSON frames with an enforced 65,536-byte maximum frame limit. Oversized or malformed frames trigger immediate session termination.
-- **Outer vs. Inner Metadata**:
-  - Outer message attributes are transmitted in plaintext JSON: `kind`, `sessionId`, `messageId`, `transferId`, `sequence`.
-  - Sensitive feature payloads (clipboard content, file chunks, notification text, phone numbers, command details) are encapsulated inside `nonce` and `ciphertext` using AES-GCM authenticated encryption.
-- **Idempotency & Replay**: Handled via session-local bounded message ID sets (`seenMessageIDs`, capacity 256).
-
-### Feature Policies & Feature State Negotiation
-- Features are independently toggled per paired device and globally.
-- After session verification, peers exchange their effective policy via an encrypted `features.update` message.
-- A feature is enabled only if *both* local and remote policies permit it.
-
-### Plugins
-
-A plugin registers a capability string, message type prefix, lifecycle hooks,
-and handler. Plugins are independently enabled per paired device. Unknown
-capabilities and message types are ignored or answered with `unsupported_type`.
-
-The current clients persist a global feature policy plus per-device overrides.
-The global switch always takes precedence. After authentication, peers exchange
-their effective feature state through an encrypted `features.update` message.
-A feature is exposed only when both peers enable it; UI actions and dependent
-status such as battery data update immediately. Incoming side effects still
-check local policy independently. Active accepted file transfers are allowed to
-complete so changing a setting cannot strand a partial transfer.
-
-## Connection lifecycle
+## 1. High-Level Architecture Overview
 
 ```text
-idle -> discovering -> connecting -> authenticating -> connected
-  ^          |             |               |              |
-  `----------+-------------+---------------+--- backoff ---'
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              macOS Host                                 │
+│                                                                         │
+│  ┌────────────────────────┐                   ┌───────────────────────┐ │
+│  │     SwiftUI Views      │                   │   Media Controller    │ │
+│  │ (MenuBarExtra/Popover) │                   │ (Apple Music/Spotify) │ │
+│  └───────────┬────────────┘                   └───────────┬───────────┘ │
+│              │                                            │             │
+│              ▼                                            ▼             │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │                    PairingCoordinator (Session)                    │ │
+│  │      - Session State Machine (Idle, Connecting, Verifying, Con.)   │ │
+│  │      - Feature Gating & Server-Side Enforcement                    │ │
+│  └─────────────────────────────────┬──────────────────────────────────┘ │
+│                                    │                                    │
+│  ┌─────────────────────────────────▼──────────────────────────────────┐ │
+│  │                Cryptographic & Framing Subsystem                   │ │
+│  │      - Ephemeral P-256 ECDH + HKDF-SHA-256 Key Derivation          │ │
+│  │      - Hardware Identity Keys (macOS Keychain)                     │ │
+│  │      - AES-GCM-256 Authenticated Encryption                        │ │
+│  │      - Newline-Delimited JSON Framing (64 KiB strict cap)          │ │
+│  └─────────────────────────────────┬──────────────────────────────────┘ │
+│                                    │                                    │
+│  ┌─────────────────────────────────▼──────────────────────────────────┐ │
+│  │                     Network Layer (NWConnection)                   │ │
+│  │      - Bonjour/DNS-SD Publishing & Discovery (_synq._tcp.local.)  │ │
+│  │      - Raw TCP Socket Transport                                    │ │
+│  └─────────────────────────────────┬──────────────────────────────────┘ │
+└────────────────────────────────────┼────────────────────────────────────┘
+                                     │ Encrypted Local TCP Stream
+                                     │ (Wi-Fi / Ethernet LAN)
+┌────────────────────────────────────┼────────────────────────────────────┐
+│  ┌─────────────────────────────────▼──────────────────────────────────┐ │
+│  │                 Network Layer (Socket / ServerSocket)              │ │
+│  │      - Android NSD (Network Service Discovery)                     │ │
+│  │      - Camera2 QR Code Scanner Fallback                            │ │
+│  └─────────────────────────────────┬──────────────────────────────────┘ │
+│                                    │                                    │
+│  ┌─────────────────────────────────▼──────────────────────────────────┐ │
+│  │                Cryptographic & Framing Subsystem                   │ │
+│  │      - Ephemeral P-256 ECDH + HKDF-SHA-256 Key Derivation          │ │
+│  │      - Hardware Identity Keys (Android KeyStore)                   │ │
+│  │      - AES-GCM-256 Authenticated Encryption                        │ │
+│  │      - Block-Buffered Line Reader (64 KiB strict cap)              │ │
+│  └─────────────────────────────────┬──────────────────────────────────┘ │
+│                                    │                                    │
+│  ┌─────────────────────────────────▼──────────────────────────────────┐ │
+│  │                 SYNQConnectionService (Foreground)                 │ │
+│  │      - Persistent Protocol Dispatch & Replay Filtering             │ │
+│  │      - Feature State Synchronization & Policy Checks               │ │
+│  └───────────────────┬────────────────────────────┬───────────────────┘ │
+│                      │                            │                     │
+│                      ▼                            ▼                     │
+│  ┌────────────────────────────────────┐  ┌────────────────────────────┐ │
+│  │     RemoteMediaSessionManager      │  │    Jetpack Compose UI      │ │
+│  │   - System MediaSession (Lock Scrn)│  │   - Material 3 Dashboard   │ │
+│  │   - Notification.MediaStyle Shade  │  │   - Now Playing Card       │ │
+│  └────────────────────────────────────┘  └────────────────────────────┘ │
+│                                                                         │
+│                             Android Peer                                │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-Network-path changes and wake events restart discovery because peer IPs are not
-stable. One deterministic dialer is selected by lexicographically comparing the
-authenticated device IDs; the lower ID initiates, while either side may accept.
-Duplicate connections are closed after authentication. Backoff uses full jitter
-with a 1 second base and 60 second cap, and resets after 30 seconds of stability.
+---
 
-## MVP plugin behavior
+## 2. macOS Client Architecture
 
-- **Battery:** Android publishes percentage and charging state after an
-  authenticated connection and on system battery changes. macOS displays the
-  latest value only while that peer remains connected.
-- **Clipboard:** UTF-8 text plus optional HTML with a mandatory plain-text
-  fallback and a 32 KiB content limit. Every encrypted update carries a unique
-  message ID and requires a delivery acknowledgement. Android background
-  clipboard access is not assumed; reading and sending requires an explicit
-  user action.
-- **Files:** metadata is announced in JSON, then bytes are streamed in bounded
-  chunks. macOS users choose a persistent receive directory; Android writes to
-  its scoped `Download/SYNQ` collection. Hash verification,
-  progress, cancellation, and partial-file cleanup are mandatory.
-- **Notifications:** Android's `NotificationListenerService` emits sanitized
-  metadata. SYNQ's own notifications and secret/silent categories are
-  filtered. Users can disable forwarding per observed Android package before
-  content enters the transport. macOS posts through `UserNotifications` and
-  returns only the bounded action tokens supplied by Android. Optional local
-  history is off by default, retains at most 200 items for seven days, and is
-  stored with owner-only permissions. Ongoing `CATEGORY_CALL` notifications are
-  the sole exception to the ongoing-notification filter: their bounded call
-  type drives a temporary macOS call card. With the separate call-integration
-  opt-in, Android's telephony state corrects ambiguous OEM notification state
-  and authenticated action tokens invoke the platform Answer, Decline, and
-  Hang Up operations. Without it, SYNQ forwards only actions supplied by
-  the phone application.
-- **Calls from Mac:** macOS sends only a strictly validated number over the
-  authenticated encrypted session. Android defaults to a notification that
-  opens the system dialer for user confirmation. Call status and controls are
-  a separate opt-in backed by narrow runtime Phone permissions; SYNQ does
-  not request contacts or call-log access, and emergency numbers never use the
-  immediate path.
-- **macOS call presentation:** call notifications use a compact non-activating
-  floating panel so Answer, Decline, and Hang Up remain directly visible rather
-  than being collapsed into the system notification action menu. Ordinary
-  mirrored notifications continue to use `UserNotifications`.
+- **Runtime & UI:** Built with Swift 5.9+ and SwiftUI, designed as a lightweight `MenuBarExtra` accessory.
+- **`PairingCoordinator`:** Central conductor managing the local listener, outgoing connections, cryptographic handshake state, active session, and feature routing.
+- **`MediaController`:** Modular media remote engine:
+  - Queries running instances of `com.apple.Music` and `com.spotify.client` via AppleScript.
+  - Queries occur on a background thread (`DispatchQueue.global(qos: .userInitiated)`) using non-blocking dispatch groups.
+  - Generates 128px JPEG thumbnails (<16 KB) from raw Apple Music descriptors or Spotify CDN image URLs.
+  - Ephemerally caches artwork using compound keys (`id|title|artist`).
+  - Gated server-side by `settings.global.media`.
+- **`FileTransferWindow`:** Dedicated floating HUD presenting active pipelined transfers with progress tracking, image thumbnails, and drag-and-drop into Finder.
+- **`GuestTransferManager`:** Runs an embedded local HTTP server bound to an ephemeral port for zero-install visitor uploads.
 
-## Platform lifecycle
+---
 
-Android uses a visible foreground service only while the user has enabled a
-persistent connection. It listens to connectivity changes and respects Doze;
-there are no hidden keep-alive tricks. macOS uses a menu-bar scene and network
-path/wake notifications. Both clients persist state before UI teardown.
+## 3. Android Client Architecture
 
-Android Back navigation closes only the activity UI and intentionally leaves
-the enabled connection service running. `Turn off SYNQ`, available both in
-the app and its foreground notification, is the explicit lifecycle boundary:
-it stops discovery and transport, removes the notification, and persists the
-disabled state. Launching the main-profile app explicitly enables it again.
+- **Runtime & UI:** Written in Kotlin with Jetpack Compose following Material 3 Expressive guidelines.
+- **`SYNQConnectionService`:** Bound foreground service that maintains the socket connection, handles heartbeat keepalives, and routes decrypted protocol messages.
+- **`RemoteMediaSessionManager`:**
+  - Manages a system `android.media.session.MediaSession`.
+  - Exposes playback status and controls to the lock screen and notification shade via `Notification.MediaStyle`.
+  - Clears cleanly (`clear()`) when no media is playing (`state.title.isBlank()`), eliminating phantom empty notifications.
+  - Binds ongoing notification status to active playback (`.setOngoing(state.playing)`).
+- **`QuickActions`:** Exposes client-side reactive models for media transport, clipboard links, battery reporting, and device alarms.
+- **`QRScanner`:** Camera2 implementation with aspect-ratio correction, animated reticle, and anti-SSRF address validation.
 
-The Android MVP activates networking only for the system/main user. Samsung
-Secure Folder and managed-profile copies have isolated app storage and would
-otherwise publish different device identities from the same physical phone.
-Those copies show an explanatory screen and do not start discovery or the
-foreground connection service.
+---
 
-## Delivery sequence
+## 4. Pairing & Authentication (SAS Ceremony)
 
-1. Repository, protocol/security specifications, buildable shells, discovery.
-2. Identity, pairing transcript, secure storage, and test vectors.
-3. pinned-TLS WebSocket transport and reconnection state machine.
-4. Clipboard, streaming files, then notification forwarding.
-5. Hardening, interoperability tests, accessibility, and release packaging.
+```text
+Mac (Initiator/Receiver)                        Android (Receiver/Initiator)
+        │                                                     │
+        │ 1. mDNS Discovery / QR Code Scan                    │
+        │    (Device ID, Device Name, Port, Ephemeral Salt)   │
+        ├────────────────────────────────────────────────────>│
+        │                                                     │
+        │ 2. TCP Socket Connected                             │
+        │<───────────────────────────────────────────────────>│
+        │                                                     │
+        │ 3. pairing.offer (Ephemeral P-256 Public Key A)     │
+        ├────────────────────────────────────────────────────>│
+        │                                                     │
+        │ 4. pairing.answer (Ephemeral P-256 Public Key B)    │
+        │<────────────────────────────────────────────────────┤
+        │                                                     │
+        │ === Ephemeral ECDH: Shared Secret Z Derived ===     │
+        │ === HKDF-SHA-256: Session Keys & SAS Derived ===    │
+        │                                                     │
+        │ 5. Display 6-Digit SAS Code (Both Screens)          │
+        │    e.g., "482910"                                   │
+        │                                                     │
+        │ [User Confirms Match on Both Devices]               │
+        │                                                     │
+        │ 6. pairing.confirm (HMAC Proof + Identity P-256 Key)│
+        │<───────────────────────────────────────────────────>│
+        │                                                     │
+        │ === Identity Pinned to Keychain / KeyStore ===      │
+        │ === Session Authenticated: Transition to Connected =│
+```
+
+- **Short Authentication String (SAS):** A 6-digit verification code calculated from the first 4 bytes of the derived verification key modulo 1,000,000 is rendered on both device screens.
+- **Single-Tap Synchronization:** The Mac UI tracks `isLocalConfirmed`. Confirming in either the onboarding window or the menu bar popover updates both surfaces to `"Confirmed. Waiting for [peer]…"`.
+- **Identity Pinning:** Devices store long-term P-256 public identity keys in macOS Keychain and Android KeyStore. Subsequent reconnections verify identity keys via cryptographic signature without re-displaying the 6-digit SAS code.
+
+---
+
+## 5. Transport & Framing
+
+- **Wire Format:** Newline-delimited (`\n`) JSON frames sent over standard TCP.
+- **Strict Frame Bound:** Enforced 65,536-byte (64 KiB) maximum frame bound prior to JSON deserialization. Oversized frames immediately drop the connection.
+- **Encrypted Envelopes:**
+  ```json
+  {
+    "kind": "quick.request",
+    "sessionId": "b6a8f110-3889-4fa2-bc46-51e3c804fbf7",
+    "messageId": "e302ab55-08e1-4566-a67b-1cb81c3c90cb",
+    "nonce": "dGhpcyBpcyBhIDEy",
+    "ciphertext": "aGVsbG8gd29ybGQgYWVzLWdjbS1jaXBoZXJ0ZXh0..."
+  }
+  ```
+- **Payload Encryption:** AES-GCM-256 with 12-byte initialization vectors and 16-byte authentication tags. Outer fields (`kind`, `sessionId`, `messageId`) are routed in plaintext JSON.
+
+---
+
+## 6. Clipboard Synchronization
+
+- **Formats:** UTF-8 plain text and rich HTML with a mandatory plain-text fallback.
+- **Payload Bounds:** 32 KiB content limit per frame.
+- **Concealment Marker Detection:** Automatically detects and skips clipboard items flagged with sensitive markers by password managers (e.g. `org.nspasteboard.ConcealedType`, `com.agilebits.onepassword`).
+- **Echo Suppression:** Tracks SHA-256 content hashes within a sliding time window (3 seconds) to prevent infinite clipboard echo loops between devices.
+
+---
+
+## 7. File Transfer Protocol
+
+- **Sliding-Window Pipelining:** Up to 64 in-flight unacknowledged chunks streamed concurrently without per-chunk stop-and-wait stalls.
+- **Chunk Sizing:** 24 KiB frames with cumulative block acknowledgments emitted every 16 chunks.
+- **Receiver Buffering:** Android and macOS allocate 64 KiB socket buffers and 256 KiB file streams for high-speed local disk I/O.
+- **Integrity & Atomic Renaming:** Incoming files are written to isolated temporary files (`.part`). When the final chunk arrives, the full file SHA-256 checksum is validated against the sender's declared hash before atomic rename into the destination directory.
+
+---
+
+## 8. Android-to-Android Direct Sharing
+
+- **Peer Discovery:** Two Android devices on the same Wi-Fi discover each other via NSD (`_synq._tcp.local.`).
+- **Encrypted Pairing:** Identical P-256 ECDH and SAS 6-digit confirmation ceremony as Mac-to-Android pairing.
+- **Strict Companion Feature Isolation:** To preserve device privacy and boundary clarity, Android-to-Android pairings strictly disable companion features (calls, SMS, notifications, clipboard auto-sync, Ring/Ping). Only high-speed encrypted file transfer (`SYNQFeature.FILES`) is negotiated and allowed.
+- **Multi-File Batching:** Supports multi-document selection (`OpenMultipleDocuments`) and bulk queueing.
+
+---
+
+## 9. Media-Control Architecture
+
+### macOS Side
+- **Engine:** `MediaController.swift`.
+- **Query Pipeline:** Parallel asynchronous AppleScript commands executed via `osascript` targeting:
+  - `com.apple.Music`: Track name, artist, player state, player position, track duration, sound volume, raw artwork data.
+  - `com.spotify.client`: Track name, artist, player state, player position, track duration, sound volume, artwork URL.
+- **Arbitration:** If both players are running, the actively playing instance (`playing == true`) takes precedence over paused or idle sessions.
+- **Artwork Downsampling:** Raw image data is downsampled via `CGImageSourceCreateThumbnailAtIndex` into a 128px JPEG thumbnail (<16 KB) and base64-encoded.
+- **Permission Guard:** Gated by `settings.global.media`. If disabled, `MediaController` resets state, halts periodic polling, drops outgoing broadcasts, and rejects incoming commands with `accepted: false`.
+
+### Android Side
+- **Engine:** `RemoteMediaSessionManager.kt`.
+- **System Integration:**
+  - Creates and manages an active `MediaSession`.
+  - Sets `MediaMetadata` (title, artist, album, duration, album art bitmap).
+  - Configures `PlaybackState` (state code, playback position, playback speed, actions: play/pause, skip to next, skip to previous, seek to).
+  - Posts a `Notification.MediaStyle` notification to the `synq_remote_media` channel.
+- **Lifecycle Control:** Dismisses notification and releases session immediately when `state.title.isBlank()`.
+
+---
+
+## 10. Over-The-Air (OTA) Update Architecture
+
+- **Manifest:** `release-manifest.json` hosted on GitHub Releases containing semantic version, platform builds, download URLs, file sizes, and SHA-256 hashes.
+- **Android (`SYNQUpdateManager`):**
+  - Compares semantic versioning (`versionCode > currentVersionCode`).
+  - Downloads APK in background with notification progress.
+  - Verifies payload SHA-256 hash.
+  - Verifies release signing certificate fingerprint against embedded pinning (`ad2eeabb...`).
+  - Launches Android `PackageInstaller` session.
+- **macOS (`SYNQUpdateManager.swift`):**
+  - Offers 3 user settings: *Download & Install*, *Only Download* (to `~/Downloads`), and *Check & Inform*.
+  - Validates payload SHA-256 hash before mounting the DMG volume and launching the installer.

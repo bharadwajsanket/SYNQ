@@ -6,28 +6,39 @@ import AppKit
 /// system popover's naturally rounded silhouette.
 struct MenuBarPanelSurface<Content: View>: View {
     private let content: Content
+    private let targetHeight: CGFloat?
 
-    init(@ViewBuilder content: () -> Content) {
+    init(height: CGFloat? = nil, @ViewBuilder content: () -> Content) {
         self.content = content()
+        self.targetHeight = height
     }
 
     var body: some View {
         let panelShape = RoundedRectangle(cornerRadius: 32, style: .continuous)
-        content
-            .frame(width: 340, alignment: .topLeading)
-            .background {
-                if #available(macOS 26.0, *) {
-                    Color.clear
-                        .glassEffect(.regular, in: panelShape)
-                } else {
-                    panelShape.fill(.regularMaterial)
-                }
+        Group {
+            if let targetHeight, targetHeight > 0 {
+                content
+                    .frame(width: 340, height: targetHeight, alignment: .topLeading)
+            } else {
+                content
+                    .frame(width: 340, alignment: .topLeading)
             }
-            .background(MenuBarWindowAccessorRepresentable())
+        }
+        .background {
+            if #available(macOS 26.0, *) {
+                Color.clear
+                    .glassEffect(.regular, in: panelShape)
+            } else {
+                panelShape.fill(.regularMaterial)
+            }
+        }
+        .background(MenuBarWindowAccessorRepresentable(targetHeight: targetHeight ?? 0))
     }
 }
 
 private struct MenuBarWindowAccessorRepresentable: NSViewRepresentable {
+    let targetHeight: CGFloat
+
     func makeNSView(context: Context) -> MenuBarWindowAccessorView {
         let view = MenuBarWindowAccessorView()
         // This representable exists only to configure the hosting popover.
@@ -41,17 +52,20 @@ private struct MenuBarWindowAccessorRepresentable: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: MenuBarWindowAccessorView, context: Context) {
-        nsView.configureWindowIfNeeded()
+        nsView.configureWindowIfNeeded(targetHeight: targetHeight > 0 ? targetHeight : nil)
     }
 }
 
 final class MenuBarWindowAccessorView: NSView {
+    private var lastTargetHeight: CGFloat?
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        configureWindowIfNeeded()
+        configureWindowIfNeeded(targetHeight: lastTargetHeight)
     }
 
-    func configureWindowIfNeeded() {
+    func configureWindowIfNeeded(targetHeight: CGFloat? = nil) {
+        if let targetHeight { lastTargetHeight = targetHeight }
         guard let window = self.window else { return }
         if #available(macOS 26.0, *) {
             // The SwiftUI glass shape draws the panel. Let its rounded corners
@@ -69,7 +83,11 @@ final class MenuBarWindowAccessorView: NSView {
             }
         }
         MenuBarWindowPinner.shared.pinWindowTop(window)
-        MenuBarWindowPinner.shared.fitWindowToContent(window)
+        if let effectiveHeight = targetHeight ?? lastTargetHeight, effectiveHeight > 50 {
+            MenuBarWindowPinner.shared.resizeWindow(window, toHeight: effectiveHeight)
+        } else {
+            MenuBarWindowPinner.shared.fitWindowToContent(window)
+        }
     }
 }
 
@@ -96,6 +114,23 @@ final class MenuBarWindowPinner: NSObject {
                 name: NSWindow.willCloseNotification,
                 object: window
             )
+        }
+    }
+
+    func resizeWindow(_ window: NSWindow, toHeight newHeight: CGFloat) {
+        let id = ObjectIdentifier(window)
+        if lastTopYByWindow[id] == nil && window.isVisible && window.frame.height > 50 {
+            lastTopYByWindow[id] = window.frame.maxY
+        }
+        guard let top = lastTopYByWindow[id] ?? (window.isVisible ? window.frame.maxY : nil) else {
+            return
+        }
+        lastTopYByWindow[id] = top
+        var frame = window.frame
+        if abs(frame.height - newHeight) > 1 {
+            frame.origin.y = top - newHeight
+            frame.size.height = newHeight
+            window.setFrame(frame, display: true, animate: false)
         }
     }
 

@@ -77,21 +77,23 @@ that an operation definitely never reached the other peer.
   no user credentials, whitespace/control characters or backslashes, valid
   optional port. One pending received link per device; a second is declined.
   Acceptance means queued for explicit local Open/Dismiss, **not** opened.
-- `media`: Android → Mac, only `toggle`, `pause`, `next`, `previous`, `seek`
-  (integer seconds 0…604800), `volume` (integer 0…100). The Mac must locally
-  opt in and select running Music or Spotify. Commands map to fixed player
-  AppleScript instructions, never received source code or a remote shell.
-  Automation failures and a busy player are reported as rejected. Accepted
-  means the player command completed, not that a particular track must exist.
+- `media`: Android → Mac, `toggle`, `pause`, `next`, `previous`, `seek`
+  (integer seconds 0…604800), `volume` (integer 0…100), or `select_source`
+  (string bundle ID: `"com.apple.Music"` or `"com.spotify.client"`). The Mac must
+  locally opt in to media control. Commands map to fixed player AppleScript instructions,
+  never received source code or a remote shell. Automation failures, busy players,
+  or disabled media settings are reported as rejected (`accepted: false`).
 - `media.state`: Mac → Android; `version`, `player`, `title`/`artist` (256
   characters each), boolean `playing`, integer `position`/`duration`
-  (0…604800), `volume` (0…100), bounded `detail`. Optional base64 `artwork`
-  contains at most 16 KiB JPEG, at most 128×128 pixels. The receiver validates
-  both encoded size and decoded dimensions before allocating a bitmap.
+  (0…604800), `volume` (0…100), bounded `detail`, `selected_source_id` (string),
+  and `sources` (array of detected sources with `id`, `name`, `title`, `artist`, `playing`, `position`, `duration`, `volume`).
+  Optional base64 `artwork` contains at most 16 KiB JPEG, at most 128×128 pixels.
+  The receiver validates both encoded size and decoded dimensions before allocating a bitmap.
 
-Music artwork comes from player automation, not filesystem browsing; it is
-optional and may be unavailable. Spotify artwork is not downloaded. Metadata
-refreshes after commands/settings changes and on the ten-second heartbeat.
+Artwork is extracted via native AppleScript descriptor data (Apple Music) or downloaded
+directly from Spotify CDN over HTTPS with a strict 2.5s timeout (Spotify), downsampled
+to 128×128 JPEG with quality 0.7, and cached by track key in memory. Metadata refreshes
+automatically on playback notifications, commands, settings changes, and periodic timers.
 
 ### Battery (`battery.send.v1`)
 
