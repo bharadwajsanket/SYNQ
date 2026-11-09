@@ -1,7 +1,7 @@
 {
   "version": "5.5.4",
   "versionCode": 55,
-  "releaseDate": "2026-11-09",
+  "releaseDate": "2026-11-10",
   "releaseNotes": "SYNQ 5.5.4: Mac + Android Integration Update featuring interactive screen mirroring with hardware video decoding, two-way low-battery alerts with configurable thresholds, live call duration timer, and ecosystem reliability polish.",
   "platforms": {
     "android": {
@@ -11,16 +11,16 @@
       "minSdk": 26,
       "targetSdk": 36,
       "downloadUrl": "https://github.com/bharadwajsanket/SYNQ/releases/download/v5.5.4/SYNQ-Android.apk",
-      "size": 17425394,
-      "sha256": "1e55504ddb8da04a4f557aafa1708105a3893a610be80031482e6abb472a7f3b",
+      "size": 1644764,
+      "sha256": "61d116e860f41eedfb8fd5153001ed6e20df17fb0b4b57e3e622c51c0e511ffd",
       "certificateFingerprint": "ad2eeabb5612c89587df603ab55cc8d5870824adbb793602474913c2266a4484"
     },
     "macos": {
       "version": "5.5.4",
       "buildNumber": "55",
       "downloadUrl": "https://github.com/bharadwajsanket/SYNQ/releases/download/v5.5.4/SYNQ-macOS.dmg",
-      "size": 2648684,
-      "sha256": "4dd30180dd53e3cd566bf5199dc7b945800547c1281de79c52c0d4cf88700341"
+      "size": 2759216,
+      "sha256": "783e8516de3b154605c80a6b8bc21b835af0def375297a86f1f6d3f828ecf1d2"
     }
   }
 }
