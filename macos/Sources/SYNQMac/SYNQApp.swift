@@ -500,6 +500,12 @@ private struct SYNQPanel: View {
                             Text(remoteCallStatusTitle(call.type))
                                 .font(.caption)
                                 .fontWeight(.semibold)
+                            if call.type == "ongoing", let connectedAt = call.connectedAt {
+                                Text("·")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                CallDurationView(connectedAt: connectedAt)
+                            }
                         }
                         .foregroundStyle(call.type == "incoming" ? Color.green : Color.accentColor)
 
@@ -527,6 +533,9 @@ private struct SYNQPanel: View {
                 }
 
                 LazyVGrid(columns: quickActionColumns, spacing: 8) {
+                    actionButton("SYNQ View", icon: "iphone.and.arrow.forward") {
+                        pairing.startScreenMirror()
+                    }
                     if pairing.isFeatureAvailable(.clipboard) {
                         actionButton("Clipboard", icon: "doc.on.clipboard") { pairing.sendClipboard() }
                     }

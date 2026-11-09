@@ -29,6 +29,9 @@ class ManifestPermissionsTest {
                 "android.permission.REQUEST_INSTALL_PACKAGES",
                 "android.permission.MODIFY_AUDIO_SETTINGS",
                 "android.permission.MANAGE_ONGOING_CALLS",
+                "android.permission.RECORD_AUDIO",
+                "android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION",
+                "android.permission.WAKE_LOCK",
             ),
             declared,
         )

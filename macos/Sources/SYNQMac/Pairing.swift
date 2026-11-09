@@ -39,6 +39,7 @@ struct RemoteCallStatus: Equatable {
     let detail: String
     let type: String
     let actions: [RemoteCallAction]
+    var connectedAt: Date? = nil
 }
 
 enum TransferPhase: String, Equatable {
@@ -319,6 +320,10 @@ final class PairingCoordinator: ObservableObject {
     @Published private(set) var remoteFeatures = defaultRemoteFeatureState()
     @Published private(set) var notificationHistory: [NotificationHistoryItem] = []
     @Published private(set) var remoteCall: RemoteCallStatus?
+    @Published private(set) var callConnectedAt: Date? = nil
+    @Published private(set) var isScreenMirroring = false
+    var mirrorViewerWindow: MirrorViewerWindowController?
+    var batteryAlertCoordinator: BatteryAlertCoordinator?
     @Published private(set) var callStatus: String?
     @Published private(set) var inFlightCallActionToken: String?
     @Published private(set) var isSpeakerActive: Bool = false
@@ -482,6 +487,8 @@ final class PairingCoordinator: ObservableObject {
             }
         }
         shortcuts.register()
+        batteryAlertCoordinator = BatteryAlertCoordinator(pairing: self, settings: settings)
+        mirrorViewerWindow = MirrorViewerWindowController(pairing: self)
         settingsCancellable = Publishers.CombineLatest3(
             settings.$globalFeatures,
             settings.$deviceFeatures,
@@ -950,7 +957,7 @@ final class PairingCoordinator: ObservableObject {
         )
     }
 
-    private var isConnected: Bool {
+    var isConnected: Bool {
         if case .connected = state { return true }
         return false
     }
@@ -1409,6 +1416,119 @@ final class PairingCoordinator: ObservableObject {
     @discardableResult
     func sendDroppedFile(_ url: URL) -> Bool {
         sendDroppedFiles([url])
+    }
+
+    func startScreenMirror(captureAppOnly: Bool = false) {
+        guard let current = session, case .connected = state, let key = current.pairingKey else { return }
+        let sessionID = UUID().uuidString.lowercased()
+        let quality = MirrorQuality.high1080p60
+        let offer = MirrorOfferPayload(
+            version: 1,
+            sessionId: sessionID,
+            width: quality.width,
+            height: quality.height,
+            fps: quality.fps,
+            bitrate: quality.bitrate,
+            captureAppOnly: captureAppOnly
+        )
+        guard let data = try? JSONEncoder().encode(offer),
+              let encrypted = try? encrypt(data, key: key) else { return }
+        current.send(PairingMessage(
+            kind: "mirror.offer",
+            sessionId: current.id,
+            messageId: UUID().uuidString.lowercased(),
+            nonce: encrypted.nonce,
+            ciphertext: encrypted.ciphertext
+        ))
+        mirrorViewerWindow?.show(sessionID: sessionID, deviceName: current.peerName, width: quality.width, height: quality.height)
+        isScreenMirroring = true
+    }
+
+    func stopScreenMirror(sessionId: String) {
+        guard let current = session, case .connected = state, let key = current.pairingKey else { return }
+        let payload: [String: Any] = ["version": 1, "sessionId": sessionId]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let encrypted = try? encrypt(data, key: key) else { return }
+        current.send(PairingMessage(
+            kind: "mirror.stop",
+            sessionId: current.id,
+            messageId: UUID().uuidString.lowercased(),
+            nonce: encrypted.nonce,
+            ciphertext: encrypted.ciphertext
+        ))
+        isScreenMirroring = false
+        mirrorViewerWindow?.hide()
+    }
+
+    func sendMirrorInput(_ input: MirrorInputPayload) {
+        guard let current = session, case .connected = state, let key = current.pairingKey else { return }
+        guard let data = try? JSONEncoder().encode(input),
+              let encrypted = try? encrypt(data, key: key) else { return }
+        current.send(PairingMessage(
+            kind: "mirror.input",
+            sessionId: current.id,
+            messageId: UUID().uuidString.lowercased(),
+            nonce: encrypted.nonce,
+            ciphertext: encrypted.ciphertext
+        ))
+    }
+
+    func sendMirrorQualityChange(sessionId: String, quality: MirrorQuality) {
+        guard let current = session, case .connected = state, let key = current.pairingKey else { return }
+        let payload: [String: Any] = [
+            "version": 1,
+            "sessionId": sessionId,
+            "width": quality.width,
+            "height": quality.height,
+            "fps": quality.fps,
+            "bitrate": quality.bitrate
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let encrypted = try? encrypt(data, key: key) else { return }
+        current.send(PairingMessage(
+            kind: "mirror.quality",
+            sessionId: current.id,
+            messageId: UUID().uuidString.lowercased(),
+            nonce: encrypted.nonce,
+            ciphertext: encrypted.ciphertext
+        ))
+    }
+
+    func sendMirrorMicAudio(sessionId: String, data: Data) {
+        guard let current = session, case .connected = state, let key = current.pairingKey else { return }
+        let payload: [String: Any] = [
+            "version": 1,
+            "sessionId": sessionId,
+            "pcm": data.base64EncodedString()
+        ]
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: payload),
+              let encrypted = try? encrypt(jsonData, key: key) else { return }
+        current.send(PairingMessage(
+            kind: "mirror.mic",
+            sessionId: current.id,
+            messageId: UUID().uuidString.lowercased(),
+            nonce: encrypted.nonce,
+            ciphertext: encrypted.ciphertext
+        ))
+    }
+
+    func sendBatteryLowAlert(type: String, level: Int, isCritical: Bool) {
+        guard let current = session, case .connected = state, let key = current.pairingKey else { return }
+        let payload: [String: Any] = [
+            "version": 1,
+            "type": type,
+            "level": level,
+            "isCritical": isCritical
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let encrypted = try? encrypt(data, key: key) else { return }
+        current.send(PairingMessage(
+            kind: "battery.low_alert",
+            sessionId: current.id,
+            messageId: UUID().uuidString.lowercased(),
+            nonce: encrypted.nonce,
+            ciphertext: encrypted.ciphertext
+        ))
     }
 
     func sendFiles(_ urls: [URL]) {
@@ -2200,7 +2320,74 @@ final class PairingCoordinator: ObservableObject {
                     throw PairingError.invalidMessage
                 }
                 remoteBattery = RemoteBatteryStatus(level: payload.level, isCharging: payload.isCharging)
+                batteryAlertCoordinator?.handlePhoneBatteryUpdate(level: payload.level, isCharging: payload.isCharging)
                 NSLog("PLUGIN battery received level=%d charging=%@", payload.level, String(payload.isCharging))
+            case "battery.low_alert":
+                guard case .connected = state,
+                      message.sessionId == current.id,
+                      let nonce = message.nonce,
+                      let ciphertext = message.ciphertext,
+                      let plaintext = try? decrypt(nonce: nonce, ciphertext: ciphertext, key: current.pairingKey!),
+                      let json = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
+                      let level = json["level"] as? Int,
+                      let isCritical = json["isCritical"] as? Bool else { return }
+                batteryAlertCoordinator?.handlePhoneBatteryLowAlert(level: level, isCritical: isCritical, deviceName: current.peerName)
+            case "call.connected_at":
+                guard case .connected = state,
+                      message.sessionId == current.id,
+                      let nonce = message.nonce,
+                      let ciphertext = message.ciphertext,
+                      let plaintext = try? decrypt(nonce: nonce, ciphertext: ciphertext, key: current.pairingKey!),
+                      let json = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
+                      let millis = json["connectedAtMillis"] as? NSNumber else { return }
+                let date = Date(timeIntervalSince1970: millis.doubleValue / 1000.0)
+                callConnectedAt = date
+                if var call = remoteCall {
+                    call.connectedAt = date
+                    remoteCall = call
+                }
+            case "mirror.accepted":
+                guard case .connected = state, message.sessionId == current.id else { return }
+                isScreenMirroring = true
+                var mirrorSessionId = UUID().uuidString.lowercased()
+                if let nonce = message.nonce,
+                   let ciphertext = message.ciphertext,
+                   let plaintext = try? decrypt(nonce: nonce, ciphertext: ciphertext, key: current.pairingKey!),
+                   let json = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
+                   let sid = json["sessionId"] as? String {
+                    mirrorSessionId = sid
+                }
+                mirrorViewerWindow?.show(sessionID: mirrorSessionId, deviceName: current.peerName)
+            case "mirror.rejected", "mirror.stopped":
+                isScreenMirroring = false
+                mirrorViewerWindow?.hide()
+            case "mirror.frame":
+                guard case .connected = state,
+                      message.sessionId == current.id,
+                      let nonce = message.nonce,
+                      let ciphertext = message.ciphertext,
+                      let plaintext = try? decrypt(nonce: nonce, ciphertext: ciphertext, key: current.pairingKey!),
+                      let json = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
+                      let b64Data = json["data"] as? String,
+                      let frameData = Data(base64Encoded: b64Data) else { return }
+                let isKeyframe = json["isKeyframe"] as? Bool ?? false
+                let pts = (json["pts"] as? NSNumber)?.int64Value ?? 0
+                let width = json["width"] as? Int ?? 1080
+                let height = json["height"] as? Int ?? 2400
+                if !(mirrorViewerWindow?.window?.isVisible ?? false) {
+                    mirrorViewerWindow?.show(sessionID: message.sessionId, deviceName: current.peerName, width: width, height: height)
+                }
+                mirrorViewerWindow?.receiveVideoFrame(nalData: frameData, isKeyframe: isKeyframe, pts: pts, width: width, height: height)
+            case "mirror.audio":
+                guard case .connected = state,
+                      message.sessionId == current.id,
+                      let nonce = message.nonce,
+                      let ciphertext = message.ciphertext,
+                      let plaintext = try? decrypt(nonce: nonce, ciphertext: ciphertext, key: current.pairingKey!),
+                      let json = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
+                      let b64 = json["pcm"] as? String,
+                      let pcmData = Data(base64Encoded: b64) else { return }
+                mirrorViewerWindow?.receiveAudioChunk(pcmData: pcmData)
             case "notifications.post":
                 guard featureEnabled(.notifications, current: current) else { return }
                 guard case .connected = state,
@@ -3037,6 +3224,14 @@ final class PairingCoordinator: ObservableObject {
         let actions = (payload.actions ?? []).filter { !$0.allowsReply }.prefix(4).map {
             RemoteCallAction(id: $0.actionToken, title: $0.title)
         }
+        var connectedAtDate: Date? = remoteCall?.connectedAt ?? callConnectedAt
+        if callType == "ongoing" && connectedAtDate == nil {
+            connectedAtDate = Date()
+            callConnectedAt = connectedAtDate
+        } else if callType != "ongoing" {
+            connectedAtDate = nil
+            callConnectedAt = nil
+        }
         remoteCall = RemoteCallStatus(
             notificationID: payload.notificationId,
             deviceID: deviceID,
@@ -3044,7 +3239,8 @@ final class PairingCoordinator: ObservableObject {
             caller: payload.title,
             detail: remoteCallDetail(payload.text, type: callType),
             type: callType,
-            actions: actions
+            actions: actions,
+            connectedAt: connectedAtDate
         )
         mediaController.callChanged(active: ["incoming", "ongoing"].contains(callType))
         if hiddenCallOverlayIdentity != identity {
@@ -3209,6 +3405,7 @@ final class PairingCoordinator: ObservableObject {
             clearCallStatus()
             mediaController.callChanged(active: false)
             remoteCall = nil
+            callConnectedAt = nil
             callOverlayWindow.hide()
             hiddenCallOverlayIdentity = nil
             audibleCallIdentity = nil
@@ -3229,6 +3426,7 @@ final class PairingCoordinator: ObservableObject {
         isMuteActive = false
         guard let call = remoteCall else { return }
         remoteCall = nil
+        callConnectedAt = nil
         callOverlayWindow.hide()
         hiddenCallOverlayIdentity = nil
         audibleCallIdentity = nil
@@ -3318,7 +3516,7 @@ private final class Session {
     }
 
     func receive() {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, complete, error in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 131_072) { [weak self] data, _, complete, error in
             DispatchQueue.main.async {
                 guard let self else { return }
                 if let data { self.buffer.append(data) }

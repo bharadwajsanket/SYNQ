@@ -1,7 +1,7 @@
 import Foundation
 import Network
 
-let maximumProtocolFrameBytes = 65_536
+let maximumProtocolFrameBytes = 4 * 1024 * 1024
 let maximumTransferHistory = 20
 private let protocolJSONDecoder = JSONDecoder()
 

@@ -157,6 +157,7 @@ class PairingCoordinator(
     private val processedSmsSendIds = ConcurrentHashMap.newKeySet<String>()
     val deviceId: String get() = localDeviceId
     var androidShareManager: AndroidShareManager? = null
+    var batteryAlertManager: BatteryAlertManager? = null
 
     data class QueuedConnectionRequest(
         val socket: Socket,
@@ -455,10 +456,16 @@ class PairingCoordinator(
         }
     }
 
+    private var lastSentBatteryLevel: Int? = null
+    private var lastSentBatteryCharging: Boolean? = null
+
     fun sendBattery(level: Int, isCharging: Boolean) {
         if (!isFeatureAvailable(SYNQFeature.BATTERY)) return
         val connectedSession = session ?: return
         if (mutableState.value !is PairingState.Connected) return
+        if (lastSentBatteryLevel == level && lastSentBatteryCharging == isCharging) return
+        lastSentBatteryLevel = level
+        lastSentBatteryCharging = isCharging
         scope.launch {
             if (session !== connectedSession || mutableState.value !is PairingState.Connected) return@launch
             val payload = JSONObject()
@@ -1087,6 +1094,8 @@ class PairingCoordinator(
         val current = Session(socket, existingInput ?: BufferedInputStream(socket.getInputStream(), 128 * 1024))
         current.initiatedLocally = initiatedLocally
         session = current
+        lastSentBatteryLevel = null
+        lastSentBatteryCharging = null
         mutableRemoteBattery.value = null
         clearPingStatus()
         quickActions.reset()
@@ -1285,6 +1294,74 @@ class PairingCoordinator(
                 }
             }
             "battery.update" -> receiveBattery(current, message)
+            "battery.low_alert" -> {
+                if (mutableState.value is PairingState.Connected && message.sessionId == current.id) {
+                    val nonce = message.nonce
+                    val ciphertext = message.ciphertext
+                    val key = current.pairingKey
+                    if (nonce != null && ciphertext != null && key != null) {
+                        val plaintext = Crypto.decrypt(key, nonce, ciphertext)
+                        if (plaintext != null) {
+                            val payload = runCatching { JSONObject(plaintext.toString(Charsets.UTF_8)) }.getOrNull()
+                            if (payload != null) {
+                                val level = payload.optInt("level", 0)
+                                val isCritical = payload.optBoolean("isCritical", false)
+                                batteryAlertManager?.handleMacBatteryLowAlert(level, isCritical, current.peerName)
+                            }
+                        }
+                    }
+                }
+            }
+            "mirror.offer" -> {
+                if (mutableState.value is PairingState.Connected && message.sessionId == current.id) {
+                    val nonce = message.nonce
+                    val ciphertext = message.ciphertext
+                    val key = current.pairingKey
+                    if (nonce != null && ciphertext != null && key != null) {
+                        val plaintext = Crypto.decrypt(key, nonce, ciphertext)
+                        if (plaintext != null) {
+                            val payload = runCatching { JSONObject(plaintext.toString(Charsets.UTF_8)) }.getOrNull()
+                            if (payload != null) {
+                                val sessionId = payload.optString("sessionId")
+                                val width = payload.optInt("width", 1080)
+                                val height = payload.optInt("height", 2400)
+                                val fps = payload.optInt("fps", 60)
+                                val bitrate = payload.optInt("bitrate", 4_000_000)
+                                MirrorConsentActivity.start(appContext, sessionId, width, height, fps, bitrate)
+                            }
+                        }
+                    }
+                }
+            }
+            "mirror.stop" -> {
+                ScreenMirrorService.stop(appContext)
+            }
+            "mirror.input" -> {
+                if (mutableState.value is PairingState.Connected && message.sessionId == current.id) {
+                    val nonce = message.nonce
+                    val ciphertext = message.ciphertext
+                    val key = current.pairingKey
+                    if (nonce != null && ciphertext != null && key != null) {
+                        val plaintext = Crypto.decrypt(key, nonce, ciphertext)
+                        if (plaintext != null) {
+                            val payload = runCatching { JSONObject(plaintext.toString(Charsets.UTF_8)) }.getOrNull()
+                            if (payload != null) {
+                                val action = payload.optString("action")
+                                val nx = if (payload.has("x")) payload.optDouble("x") else null
+                                val ny = if (payload.has("y")) payload.optDouble("y") else null
+                                val dx = if (payload.has("deltaX")) payload.optDouble("deltaX") else null
+                                val dy = if (payload.has("deltaY")) payload.optDouble("deltaY") else null
+                                val keyCode = if (payload.has("keyCode")) payload.optString("keyCode") else null
+                                val text = if (payload.has("text")) payload.optString("text") else null
+                                ScreenMirrorService.instance?.handleInput(action, nx, ny, dx, dy, keyCode, text)
+                            }
+                        }
+                    }
+                }
+            }
+            "mirror.mic" -> {
+                // Microphone routing into third-party target apps is restricted by Android OS sandboxing on non-rooted devices
+            }
             "files.accept" -> message.transferId?.let { pendingFileAccepts.remove(it)?.complete(true) }
             "files.complete.ack" -> message.transferId?.let { pendingFileCompletions.remove(it)?.complete(true) }
             "files.offer" -> {
@@ -2043,6 +2120,148 @@ class PairingCoordinator(
         }
     }
 
+    fun sendBatteryLowAlert(type: String, level: Int, isCritical: Boolean) {
+        val current = session ?: return
+        if (mutableState.value !is PairingState.Connected || current.pairingKey == null) return
+        val json = JSONObject().apply {
+            put("version", 1)
+            put("type", type)
+            put("level", level)
+            put("isCritical", isCritical)
+        }
+        val encrypted = Crypto.encrypt(current.pairingKey!!, json.toString().toByteArray(Charsets.UTF_8))
+        current.send(
+            Message(
+                kind = "battery.low_alert",
+                sessionId = current.id,
+                messageId = UUID.randomUUID().toString().lowercase(),
+                nonce = encrypted.nonce,
+                ciphertext = encrypted.ciphertext
+            )
+        )
+    }
+
+    fun sendCallConnectedAt(connectedAtMillis: Long) {
+        val current = session ?: return
+        if (mutableState.value !is PairingState.Connected || current.pairingKey == null) return
+        val json = JSONObject().apply {
+            put("version", 1)
+            put("connectedAtMillis", connectedAtMillis)
+        }
+        val encrypted = Crypto.encrypt(current.pairingKey!!, json.toString().toByteArray(Charsets.UTF_8))
+        current.send(
+            Message(
+                kind = "call.connected_at",
+                sessionId = current.id,
+                messageId = UUID.randomUUID().toString().lowercase(),
+                nonce = encrypted.nonce,
+                ciphertext = encrypted.ciphertext
+            )
+        )
+    }
+
+    fun handleMirrorAccepted(sessionId: String) {
+        val current = session ?: return
+        if (mutableState.value !is PairingState.Connected || current.pairingKey == null) return
+        val json = org.json.JSONObject().apply {
+            put("version", 1)
+            put("sessionId", sessionId)
+        }
+        val encrypted = Crypto.encrypt(current.pairingKey!!, json.toString().toByteArray(Charsets.UTF_8))
+        current.send(
+            Message(
+                kind = "mirror.accepted",
+                sessionId = current.id,
+                messageId = java.util.UUID.randomUUID().toString().lowercase(),
+                nonce = encrypted.nonce,
+                ciphertext = encrypted.ciphertext
+            )
+        )
+    }
+
+    fun handleMirrorRejected(sessionId: String, reason: String) {
+        val current = session ?: return
+        if (mutableState.value !is PairingState.Connected || current.pairingKey == null) return
+        val json = org.json.JSONObject().apply {
+            put("version", 1)
+            put("sessionId", sessionId)
+            put("reason", reason)
+        }
+        val encrypted = Crypto.encrypt(current.pairingKey!!, json.toString().toByteArray(Charsets.UTF_8))
+        current.send(
+            Message(
+                kind = "mirror.rejected",
+                sessionId = current.id,
+                messageId = java.util.UUID.randomUUID().toString().lowercase(),
+                nonce = encrypted.nonce,
+                ciphertext = encrypted.ciphertext
+            )
+        )
+    }
+
+    fun handleMirrorStopped(sessionId: String) {
+        val current = session ?: return
+        if (mutableState.value !is PairingState.Connected || current.pairingKey == null) return
+        val json = org.json.JSONObject().apply {
+            put("version", 1)
+            put("sessionId", sessionId)
+        }
+        val encrypted = Crypto.encrypt(current.pairingKey!!, json.toString().toByteArray(Charsets.UTF_8))
+        current.send(
+            Message(
+                kind = "mirror.stopped",
+                sessionId = current.id,
+                messageId = java.util.UUID.randomUUID().toString().lowercase(),
+                nonce = encrypted.nonce,
+                ciphertext = encrypted.ciphertext
+            )
+        )
+    }
+
+    fun sendMirrorFrame(sessionId: String, data: String, isKeyframe: Boolean, pts: Long, width: Int, height: Int) {
+        val current = session ?: return
+        if (mutableState.value !is PairingState.Connected || current.pairingKey == null) return
+        val json = JSONObject().apply {
+            put("version", 1)
+            put("sessionId", sessionId)
+            put("data", data)
+            put("isKeyframe", isKeyframe)
+            put("pts", pts)
+            put("width", width)
+            put("height", height)
+        }
+        val encrypted = Crypto.encrypt(current.pairingKey!!, json.toString().toByteArray(Charsets.UTF_8))
+        current.send(
+            Message(
+                kind = "mirror.frame",
+                sessionId = current.id,
+                messageId = UUID.randomUUID().toString().lowercase(),
+                nonce = encrypted.nonce,
+                ciphertext = encrypted.ciphertext
+            )
+        )
+    }
+
+    fun sendMirrorAudio(sessionId: String, base64Pcm: String) {
+        val current = session ?: return
+        if (mutableState.value !is PairingState.Connected || current.pairingKey == null) return
+        val json = JSONObject().apply {
+            put("version", 1)
+            put("sessionId", sessionId)
+            put("pcm", base64Pcm)
+        }
+        val encrypted = Crypto.encrypt(current.pairingKey!!, json.toString().toByteArray(Charsets.UTF_8))
+        current.send(
+            Message(
+                kind = "mirror.audio",
+                sessionId = current.id,
+                messageId = UUID.randomUUID().toString().lowercase(),
+                nonce = encrypted.nonce,
+                ciphertext = encrypted.ciphertext
+            )
+        )
+    }
+
     private fun sendFeatureState() {
         val current = session ?: return
         if (mutableState.value !is PairingState.Connected || current.pairingKey == null) return
@@ -2118,7 +2337,9 @@ class PairingCoordinator(
             ?: return fail("Invalid battery status")
         val level = payload.optInt("level", -1)
         if (level !in 0..100 || payload.opt("isCharging") !is Boolean) return fail("Invalid battery status")
-        mutableRemoteBattery.value = RemoteBatteryStatus(level, payload.getBoolean("isCharging"))
+        val isCharging = payload.getBoolean("isCharging")
+        mutableRemoteBattery.value = RemoteBatteryStatus(level, isCharging)
+        batteryAlertManager?.handleMacBatteryUpdate(level, isCharging)
         android.util.Log.i("SYNQ", "PLUGIN battery received level=$level")
     }
 

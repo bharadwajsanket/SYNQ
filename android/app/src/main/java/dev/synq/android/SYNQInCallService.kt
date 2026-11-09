@@ -12,6 +12,18 @@ class SYNQInCallService : InCallService() {
         super.onCallAdded(call)
         instance = this
         Log.d(TAG, "onCallAdded: active call count = ${calls.size}")
+        call?.registerCallback(object : Call.Callback() {
+            override fun onStateChanged(c: Call, state: Int) {
+                if (state == Call.STATE_ACTIVE) {
+                    val app = application as? SYNQApplication
+                    app?.pairing?.sendCallConnectedAt(System.currentTimeMillis())
+                }
+            }
+        })
+        if (call?.state == Call.STATE_ACTIVE) {
+            val app = application as? SYNQApplication
+            app?.pairing?.sendCallConnectedAt(System.currentTimeMillis())
+        }
     }
 
     override fun onCallRemoved(call: Call?) {

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [5.5.4] - 2026-11-09
+
+### Added
+- **Interactive Screen Mirroring on Mac:** Full Android screen mirroring inside a dedicated native macOS viewer window (`MirrorViewerWindowController`) with hardware-accelerated H.264 decoding via `AVSampleBufferDisplayLayer` and VideoToolbox.
+- **Remote Touch & Navigation Input Injection:** Forward mouse clicks, drag gestures, scroll wheel, and keyboard inputs from Mac to Android with automatic orientation-aware coordinate mapping, powered by `SYNQAccessibilityService` without requiring root or external ADB tools.
+- **Synchronized Mirror Audio:** Stream Android device audio directly to macOS using `AudioPlaybackCaptureConfiguration` and playback via `AVAudioEngine` with 45ms jitter compensation. Note: routing external microphone input into third-party target apps is restricted by Android OS sandboxing on non-rooted devices (matching Apple iPhone Mirroring and scrcpy); native phone calls are handled seamlessly by Call Relay.
+- **Adaptive Video Performance:** Dynamic resolution and framerate switching (1080p 60fps, 720p 60fps, 720p 30fps) with variable bitrate encoding and frame dropping protection.
+- **Two-Way Low-Battery Alerts:** Configurable warning (default 20%) and critical (default 10%) battery thresholds on both macOS and Android, delivering native system notifications across devices with per-discharge-cycle deduplication and Quiet Mode suppression.
+- **Live Call Duration Timer on macOS:** Live updating timer on macOS Call screen and Call Overlay window triggered precisely when a call is answered (`call.connected_at`), freezing upon disconnection and excluding missed or rejected calls.
+
+### Improved
+- **Accessibility Navigation Controls:** Floating and toolbar quick-access buttons for Android Back (Esc), Home, Recents, and Notifications.
+- **Always-on-Top & Fullscreen Modes:** Dedicated toggles on macOS Mirror viewer allowing seamless multi-tasking alongside macOS apps.
+- **Local Network & USB Connection Fallback:** Automatic detection and fallback between local Wi-Fi and USB interface for zero-friction mirroring without terminal commands.
+- **End-to-End Transport Encryption:** All screen mirror video frames, audio chunks, and remote inputs are encrypted with the active AES-GCM session key.
+
+---
+
 ## [4.5.4] - 2026-11-02
 
 ### Added

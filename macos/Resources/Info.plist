@@ -22,6 +22,8 @@
 	<string>SYNQ connects to your paired Android devices and temporarily receives files from nearby guests on your local network.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>When you enable media controls, SYNQ controls your selected Music or Spotify player and shares now-playing information with your paired phone.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>SYNQ uses your microphone to stream Mac audio to your Android phone during screen mirroring and calls.</string>
     <key>NSBonjourServices</key>
     <array>
         <string>_synq._tcp</string>
@@ -30,9 +32,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>4.5.4</string>
+    <string>5.5.4</string>
     <key>CFBundleVersion</key>
-    <string>45</string>
+    <string>55</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSUIElement</key>

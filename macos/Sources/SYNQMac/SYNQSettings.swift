@@ -68,6 +68,8 @@ final class SYNQSettings: ObservableObject {
     @Published private(set) var clipboardAutoSync: Bool
     @Published private(set) var quietModeEnabled: Bool
     @Published private(set) var quietModeUpdatedAt: Int64
+    @Published private(set) var batteryAlertWarningThreshold: Int
+    @Published private(set) var batteryAlertCriticalThreshold: Int
 
     private let defaults = UserDefaults.standard
 
@@ -79,7 +81,9 @@ final class SYNQSettings: ObservableObject {
         notificationHistoryEnabled = storedDefaults.bool(forKey: "settings.notificationHistory.enabled")
         clipboardAutoSync = storedDefaults.object(forKey: "settings.clipboard.autoSync") as? Bool ?? true
         quietModeEnabled = storedDefaults.bool(forKey: "settings.quietMode.enabled")
-        quietModeUpdatedAt = Int64(storedDefaults.object(forKey: "settings.quietMode.updatedAt") as? NSNumber ?? 0)
+        quietModeUpdatedAt = Int64(truncating: storedDefaults.object(forKey: "settings.quietMode.updatedAt") as? NSNumber ?? 0)
+        batteryAlertWarningThreshold = (storedDefaults.object(forKey: "settings.batteryAlert.warningThreshold") as? NSNumber)?.intValue ?? 20
+        batteryAlertCriticalThreshold = (storedDefaults.object(forKey: "settings.batteryAlert.criticalThreshold") as? NSNumber)?.intValue ?? 10
         globalFeatures = Dictionary(uniqueKeysWithValues: SYNQFeature.allCases.map {
             ($0, storedDefaults.object(forKey: "settings.global.\($0.rawValue)") as? Bool ?? true)
         })
@@ -133,6 +137,18 @@ final class SYNQSettings: ObservableObject {
         defaults.set(timestamp, forKey: "settings.quietMode.updatedAt")
         quietModeEnabled = enabled
         quietModeUpdatedAt = timestamp
+    }
+
+    func setBatteryAlertWarningThreshold(_ value: Int) {
+        let clamped = max(5, min(value, 50))
+        defaults.set(clamped, forKey: "settings.batteryAlert.warningThreshold")
+        batteryAlertWarningThreshold = clamped
+    }
+
+    func setBatteryAlertCriticalThreshold(_ value: Int) {
+        let clamped = max(1, min(value, 25))
+        defaults.set(clamped, forKey: "settings.batteryAlert.criticalThreshold")
+        batteryAlertCriticalThreshold = clamped
     }
 
     func setForDevice(_ deviceID: String, feature: SYNQFeature, enabled: Bool) {

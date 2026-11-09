@@ -149,6 +149,9 @@ class SYNQNotificationListenerService : NotificationListenerService() {
                 applicationIcon = applicationIcon,
                 callType = callType,
             )
+            if (callType == "ongoing") {
+                synq.pairing.sendCallConnectedAt(sbn.postTime)
+            }
             forwardedNotificationIds += notificationId
             while (forwardedNotificationIds.size > MAX_TRACKED_FORWARDED_NOTIFICATIONS) {
                 forwardedNotificationIds.remove(forwardedNotificationIds.first())

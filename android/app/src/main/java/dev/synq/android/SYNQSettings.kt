@@ -47,6 +47,8 @@ data class SYNQSettingsState(
     val quietModeUpdatedAt: Long = 0L,
     val fileBrowsingEnabled: Boolean = true,
     val customBrowsingPath: String? = null,
+    val batteryWarningThreshold: Int = 20,
+    val batteryCriticalThreshold: Int = 10,
 )
 
 internal fun effectiveFeatureEnabled(
@@ -226,6 +228,20 @@ class SYNQSettings(context: Context, defaultDeviceName: String) {
     }
 
     @Synchronized
+    fun setBatteryWarningThreshold(value: Int) {
+        val clamped = value.coerceIn(5, 50)
+        preferences.edit().putInt(KEY_BATTERY_WARNING_THRESHOLD, clamped).apply()
+        mutableState.value = mutableState.value.copy(batteryWarningThreshold = clamped)
+    }
+
+    @Synchronized
+    fun setBatteryCriticalThreshold(value: Int) {
+        val clamped = value.coerceIn(1, 25)
+        preferences.edit().putInt(KEY_BATTERY_CRITICAL_THRESHOLD, clamped).apply()
+        mutableState.value = mutableState.value.copy(batteryCriticalThreshold = clamped)
+    }
+
+    @Synchronized
     fun removeFavouriteContact(id: String) {
         val updated = mutableState.value.favouriteContacts.filterNot { it.id == id }
         saveFavouriteContacts(updated)
@@ -307,6 +323,8 @@ class SYNQSettings(context: Context, defaultDeviceName: String) {
             quietModeUpdatedAt = preferences.getLong(KEY_QUIET_MODE_UPDATED_AT, 0L),
             fileBrowsingEnabled = preferences.getBoolean(KEY_FILE_BROWSING_ENABLED, true),
             customBrowsingPath = preferences.getString(KEY_CUSTOM_BROWSING_PATH, null),
+            batteryWarningThreshold = preferences.getInt(KEY_BATTERY_WARNING_THRESHOLD, 20),
+            batteryCriticalThreshold = preferences.getInt(KEY_BATTERY_CRITICAL_THRESHOLD, 10),
         )
     }
 
@@ -335,5 +353,7 @@ class SYNQSettings(context: Context, defaultDeviceName: String) {
         private const val KEY_QUIET_MODE_UPDATED_AT = "quiet_mode.updated_at"
         private const val KEY_FILE_BROWSING_ENABLED = "files.browsing_enabled"
         private const val KEY_CUSTOM_BROWSING_PATH = "files.custom_browsing_path"
+        private const val KEY_BATTERY_WARNING_THRESHOLD = "battery.warning_threshold"
+        private const val KEY_BATTERY_CRITICAL_THRESHOLD = "battery.critical_threshold"
     }
 }

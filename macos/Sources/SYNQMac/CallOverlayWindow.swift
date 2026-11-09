@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 @MainActor
@@ -43,6 +44,36 @@ final class CallOverlayWindowController: NSWindowController {
     }
 }
 
+struct CallDurationView: View {
+    let connectedAt: Date
+    @State private var elapsed: TimeInterval = 0
+    let timer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        Text(formattedDuration(elapsed))
+            .font(.subheadline.monospacedDigit().weight(.medium))
+            .foregroundStyle(.secondary)
+            .onAppear {
+                elapsed = max(0, Date().timeIntervalSince(connectedAt))
+            }
+            .onReceive(timer) { now in
+                elapsed = max(0, now.timeIntervalSince(connectedAt))
+            }
+    }
+
+    private func formattedDuration(_ time: TimeInterval) -> String {
+        let totalSeconds = Int(time)
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            return String(format: "%02d:%02d", minutes, seconds)
+        }
+    }
+}
+
 private struct CallOverlayView: View {
     @ObservedObject var pairing: PairingCoordinator
     @State private var inFlightActionToken: String?
@@ -57,8 +88,15 @@ private struct CallOverlayView: View {
                             .frame(width: 42, height: 42)
                             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(remoteCallStatusTitle(call.type))
-                                .font(.headline)
+                            HStack(spacing: 6) {
+                                Text(remoteCallStatusTitle(call.type))
+                                    .font(.headline)
+                                if call.type == "ongoing", let connectedAt = call.connectedAt {
+                                    Text("·")
+                                        .foregroundStyle(.secondary)
+                                    CallDurationView(connectedAt: connectedAt)
+                                }
+                            }
                             Text(call.caller.isEmpty ? call.applicationName : call.caller)
                                 .font(.title3.weight(.semibold))
                                 .lineLimit(1)

@@ -34,6 +34,8 @@ class SYNQApplication : Application() {
         private set
     lateinit var settings: SYNQSettings
         private set
+    lateinit var batteryAlertManager: BatteryAlertManager
+        private set
     var isSYNQEnabled: Boolean = false
         private set
     var isAppInForeground: Boolean = false
@@ -68,6 +70,10 @@ class SYNQApplication : Application() {
             pairing.quickActions.request(SYNQFeature.MEDIA, action, value)
         }
         updateManager = SYNQUpdateManager(this)
+        batteryAlertManager = BatteryAlertManager(this, settings) { type, level, isCritical ->
+            pairing.sendBatteryLowAlert(type, level, isCritical)
+        }
+        pairing.batteryAlertManager = batteryAlertManager
         pairing.androidShareManager = shareManager
         discovery = NsdDiscoveryService(this, LocalDiscoveryIdentity(deviceId, deviceName))
 
@@ -204,6 +210,7 @@ class SYNQApplication : Application() {
         val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
             status == BatteryManager.BATTERY_STATUS_FULL
         pairing.sendBattery(percent, charging)
+        batteryAlertManager.handleLocalBatteryUpdate(percent, charging)
     }
 
     companion object {

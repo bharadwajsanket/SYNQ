@@ -680,6 +680,8 @@ private fun SYNQApp(
                 },
                 onFileBrowsingChanged = settings::setFileBrowsingEnabled,
                 onCustomBrowsingPathChanged = settings::setCustomBrowsingPath,
+                onBatteryWarningThresholdChanged = settings::setBatteryWarningThreshold,
+                onBatteryCriticalThresholdChanged = settings::setBatteryCriticalThreshold,
                 onNavigateToDevices = { currentDestination = NavDestination.DEVICES },
                 onGlobalFeatureChanged = { feature, enabled ->
                     settings.setGlobal(feature, enabled)
@@ -1206,6 +1208,43 @@ private fun HomeScreen(
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         Text("Ping Mac")
+                                    }
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                Button(
+                                    onClick = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        MirrorConsentActivity.start(
+                                            context,
+                                            java.util.UUID.randomUUID().toString().lowercase(),
+                                            1080,
+                                            2400,
+                                            60,
+                                            4_000_000
+                                        )
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Mirror Screen to Mac")
+                                }
+                                if (SYNQAccessibilityService.instance == null) {
+                                    Spacer(Modifier.height(6.dp))
+                                    OutlinedButton(
+                                        onClick = {
+                                            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            }
+                                            context.startActivity(intent)
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("Enable Remote Touch & Gestures", style = MaterialTheme.typography.bodySmall)
                                     }
                                 }
                             }
@@ -2070,6 +2109,8 @@ private fun SettingsScreen(
     onQuietModeChanged: (Boolean) -> Unit = {},
     onFileBrowsingChanged: (Boolean) -> Unit = {},
     onCustomBrowsingPathChanged: (String?) -> Unit = {},
+    onBatteryWarningThresholdChanged: (Int) -> Unit = {},
+    onBatteryCriticalThresholdChanged: (Int) -> Unit = {},
     onNavigateToDevices: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -2408,6 +2449,60 @@ private fun SettingsScreen(
                             "Browsing is disabled. Remote list and download requests from Mac are rejected.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            }
+        }
+
+        // Section: Battery Alerts
+        item { SectionTitle("Battery Alerts") }
+        item {
+            Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Low battery warning", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
+                            Text("${state.batteryWarningThreshold}%", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        }
+                        Text(
+                            "Mac and phone notify each other when battery drops to this level.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Slider(
+                            value = state.batteryWarningThreshold.toFloat(),
+                            onValueChange = { onBatteryWarningThresholdChanged(it.toInt()) },
+                            valueRange = 5f..50f,
+                            steps = 8
+                        )
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Critical battery warning", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
+                            Text("${state.batteryCriticalThreshold}%", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                        }
+                        Text(
+                            "High-priority alert sent across devices when battery is critically low.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Slider(
+                            value = state.batteryCriticalThreshold.toFloat(),
+                            onValueChange = { onBatteryCriticalThresholdChanged(it.toInt()) },
+                            valueRange = 1f..25f,
+                            steps = 23
                         )
                     }
                 }
@@ -2769,6 +2864,13 @@ private fun PermissionsScreen(
                 isRequired = false,
                 feature = "File Transfer & Browsing",
                 description = "Allows browsing designated phone folders from your Mac and saving files transferred wirelessly between your devices."
+            ),
+            SynqPermissionInfo(
+                name = "Remote Touch & Gestures",
+                technical = "SYNQ Accessibility Service",
+                isRequired = false,
+                feature = "Interactive Remote Control",
+                description = "Enables interactive remote control, clicks, swiping, and navigation buttons (Back, Home, Recents) from your Mac during screen mirroring. All gestures are executed entirely on-device."
             )
         )
     }

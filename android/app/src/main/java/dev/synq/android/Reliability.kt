@@ -6,82 +6,29 @@ import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import kotlin.math.min
 
-internal const val MAX_PROTOCOL_FRAME_BYTES = 65_536
+internal const val MAX_PROTOCOL_FRAME_BYTES = 4 * 1024 * 1024
 internal const val MAX_TRANSFER_HISTORY = 20
 
 internal class ProtocolFrameTooLargeException : IllegalArgumentException("Protocol frame is too large")
 
 internal fun InputStream.readProtocolLine(maxBytes: Int = MAX_PROTOCOL_FRAME_BYTES): String? {
-    if (markSupported()) {
-        val window = maxBytes + 2
-        mark(window)
-        val buffer = ByteArray(window)
-        var totalRead = 0
-        var newlineIndex = -1
-        while (totalRead < window) {
-            val count = read(buffer, totalRead, window - totalRead)
-            if (count < 0) break
-            val prev = totalRead
-            totalRead += count
-            for (i in prev until totalRead) {
-                if (buffer[i] == '\n'.code.toByte()) {
-                    newlineIndex = i
-                    break
-                }
-            }
-            if (newlineIndex >= 0) break
+    val out = ByteArrayOutputStream(min(maxBytes, 8192))
+    while (true) {
+        val b = read()
+        if (b == -1) {
+            return if (out.size() > 0) decodeUtf8(out.toByteArray(), 0, out.size()) else null
         }
-        if (newlineIndex >= 0) {
-            if (newlineIndex > maxBytes) {
-                reset()
+        if (b == '\n'.code) {
+            val bytes = out.toByteArray()
+            var len = bytes.size
+            if (len > 0 && bytes[len - 1] == '\r'.code.toByte()) len--
+            return decodeUtf8(bytes, 0, len)
+        }
+        if (b != '\r'.code) {
+            if (out.size() >= maxBytes) {
                 throw ProtocolFrameTooLargeException()
             }
-            reset()
-            var toSkip = (newlineIndex + 1).toLong()
-            while (toSkip > 0) {
-                val skipped = skip(toSkip)
-                if (skipped <= 0) {
-                    if (read() < 0) break
-                    toSkip--
-                } else {
-                    toSkip -= skipped
-                }
-            }
-            var len = newlineIndex
-            if (len > 0 && buffer[len - 1] == '\r'.code.toByte()) len--
-            return decodeUtf8(buffer, 0, len)
-        }
-        if (totalRead > maxBytes) {
-            reset()
-            throw ProtocolFrameTooLargeException()
-        }
-        if (totalRead == 0) return null
-        reset()
-        var toSkip = totalRead.toLong()
-        while (toSkip > 0) {
-            val skipped = skip(toSkip)
-            if (skipped <= 0) {
-                if (read() < 0) break
-                toSkip--
-            } else {
-                toSkip -= skipped
-            }
-        }
-        var len = totalRead
-        if (len > 0 && buffer[len - 1] == '\r'.code.toByte()) len--
-        return decodeUtf8(buffer, 0, len)
-    }
-
-    val value = ByteArrayOutputStream(min(maxBytes, 4096))
-    while (true) {
-        when (val byte = read()) {
-            -1 -> return value.takeIf { it.size() > 0 }?.toUtf8String()
-            '\n'.code -> return value.toUtf8String()
-            '\r'.code -> Unit
-            else -> {
-                if (value.size() >= maxBytes) throw ProtocolFrameTooLargeException()
-                value.write(byte)
-            }
+            out.write(b)
         }
     }
 }

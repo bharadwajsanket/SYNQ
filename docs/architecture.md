@@ -1,4 +1,4 @@
-# Architecture & System Design — SYNQ 4.5.4
+# Architecture & System Design — SYNQ 5.5.4
 
 SYNQ is a local-first, peer-to-peer companion application linking macOS and Android devices over the local network (LAN) without intermediate cloud servers, relays, or external accounts.
 
@@ -219,3 +219,45 @@ Mac (Initiator/Receiver)                        Android (Receiver/Initiator)
 - **macOS (`SYNQUpdateManager.swift`):**
   - Offers 3 user settings: *Download & Install*, *Only Download* (to `~/Downloads`), and *Check & Inform*.
   - Validates payload SHA-256 hash before mounting the DMG volume and launching the installer.
+
+---
+
+## 11. Screen Mirroring Architecture (Flagship 5.5.4)
+
+- **Android Screen Capture (`MediaProjection` + `MediaCodec`):**
+  - Prompted per session using transparent `MirrorConsentActivity` ensuring platform privacy consent.
+  - Video hardware encoding via `MediaCodec` (H.264 / AVC Baseline/Main profile).
+  - VirtualDisplay output mapped to `createInputSurface()` with dynamic resolution and frame rate (up to 60 FPS, 1080p).
+  - SPS/PPS parameter extraction and Annex-B NAL formatting.
+- **macOS Viewer (`AVSampleBufferDisplayLayer` + VideoToolbox):**
+  - Dedicated viewer window (`MirrorViewerWindowController`) with custom aspect ratio constraints.
+  - Zero-latency hardware decoding via `CMVideoFormatDescriptionCreateFromH264ParameterSets` and `CMSampleBuffer`.
+  - Fullscreen, Always-On-Top, and dynamic rotation support.
+- **Remote Touch & Navigation Input Injection:**
+  - Coordinates normalized (0.0 to 1.0) and transformed on device display coordinates.
+  - Handled by `SYNQAccessibilityService` using standard `dispatchGesture` (taps, drags, swipes, scrolls) and `performGlobalAction` (Back, Home, Recents) without root or external ADB binaries.
+  - Two-finger scrolling anchored safely in the neutral viewport center with a 25px displacement deadzone, preventing accidental clicks on interactive UI elements under the cursor.
+- **Audio Pipeline & Android OS Sandboxing Constraint:**
+  - **Device Audio Playback:** Android internal audio is captured via `AudioPlaybackCaptureConfiguration` (Android 10+) and streamed to Mac `AVAudioEngine` with a calibrated 45ms jitter buffer for synchronized audio/video playback.
+  - **Microphone Routing Constraint:** Non-rooted Android sandboxes audio recording, strictly restricting the hardware microphone HAL (`AudioRecord`) to a single foreground capturing application. Third-party Android apps cannot inject simulated microphone streams into other apps (e.g. WhatsApp, Phone, Google Meet) without root or system privileges. This is an architectural platform security restriction shared with official macOS iPhone Mirroring and scrcpy. Native phone calls in SYNQ are handled by Call Relay (`SYNQInCallService`), which routes audio directly through the telecom framework.
+
+---
+
+## 12. Two-Way Low-Battery Alerts
+
+- **Threshold Management:**
+  - Configurable Warning (default 20%) and Critical (default 10%) thresholds on both platforms.
+- **Deduplication:**
+  - State tracking per discharge cycle ensures only one notification is generated per threshold until charging resumes or level rises by >= 5%.
+- **Quiet Mode Integration:**
+  - Low-battery warnings are suppressed or silenced during Quiet Mode, while critical battery alerts reliably bypass Quiet Mode.
+
+---
+
+## 13. Live Call Duration Timer
+
+- **Precise Call Connect Detection:**
+  - Telecom `Call.STATE_ACTIVE` callback and telephony offhook detection trigger `call.connected_at` with true timestamp.
+- **macOS Display:**
+  - Live 1-second interval timer on macOS Call screen and floating call overlay.
+  - Freezes upon call termination and excludes missed or rejected calls.
